@@ -1,0 +1,30 @@
+# cargo-deny configuration: vulnerability advisories, licenses, banned
+# crates, and allowed sources. Run with `scripts/check.sh deny`.
+
+[graph]
+all-features = true
+
+[advisories]
+version = 2
+# Every advisory (vulnerability, unmaintained, unsound) fails the check.
+# Dismiss a false positive only with `ignore = [{ id = "...", reason = "..." }]`.
+yanked = "deny"
+
+[licenses]
+version = 2
+# Permissive licenses approved by the project owner. Adding a license here is
+# a decision for the owner; copyleft licenses need review first.
+allow = [
+    "MIT",
+    "Apache-2.0",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

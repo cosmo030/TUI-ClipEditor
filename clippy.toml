@@ -1,0 +1,6 @@
+# Complexity thresholds chosen by the project owner (CODING_STANDARDS › Complexity).
+# Do not raise them to make code pass; restructure the code instead.
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 80
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
