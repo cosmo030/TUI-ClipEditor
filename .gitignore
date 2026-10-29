@@ -1,0 +1,42 @@
+# Engineering standards are a maintainer-local copy and are never committed
+# (owner decision, see AGENTS.md › Approved Exceptions).
+/engineering-standards/
+/docs/engineering-standards/
+
+# Rust build output
+/target/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Video and audio files: never commit media (large binaries, possibly personal).
+*.mp4
+*.mkv
+*.mov
+*.webm
+*.avi
+*.m4v
+*.ts
+*.mts
+*.m2ts
+*.flv
+*.wmv
+*.mpg
+*.mpeg
+*.mp3
+*.wav
+*.aac
+
+# Editor, OS and tool-local files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
+
+# Logs and temporary files
+*.log
+*.tmp
