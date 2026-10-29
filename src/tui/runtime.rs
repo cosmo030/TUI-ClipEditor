@@ -10,18 +10,20 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use image::DynamicImage;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
-use ratatui::layout::Rect;
+use ratatui::layout::{Rect, Size};
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::protocol::Protocol;
 
 use super::app::{
     App, DecodedFrame, Effect, ExportEvent, ExportRequest, FrameRequest, Msg, Screen,
 };
 use super::browser::read_entries;
+use super::encoder::{EncodeRequest, Encoded, FrameKey, FrameRateMeter, spawn_encoder};
+use super::playback::{PlaybackCommand, spawn_playback_worker};
 use super::preview::{create_picker, protocol_label};
+use super::view::PreviewDisplay;
 use super::{Start, TuiError, view};
 use crate::cli::PreviewMode;
 use crate::export::{ExportJob, plan_exports};
@@ -30,16 +32,25 @@ use crate::ffmpeg::Ffmpeg;
 /// How often the playhead advances while playing.
 const PLAYBACK_TICK: Duration = Duration::from_millis(33);
 /// Largest preview frame decoded, in pixels. Bigger frames cost more to
-/// decode and transfer than they gain in a terminal.
-const MAX_PREVIEW_PIXELS: (u32, u32) = (1280, 720);
+/// decode, encode, and draw than they gain in a terminal.
+const MAX_PREVIEW_PIXELS: (u32, u32) = (1920, 1080);
 
 /// Everything the event loop waits for.
 enum LoopEvent {
     App(Msg),
+    /// A preview frame was encoded for the terminal.
+    Encoded(Encoded),
     /// The terminal was resized; only a redraw is needed.
     Resized,
     /// Reading terminal input failed; the UI cannot continue.
     InputFailed(io::Error),
+}
+
+/// The encoded preview currently on screen.
+struct ShownPreview {
+    key: FrameKey,
+    cells: Size,
+    protocol: Protocol,
 }
 
 /// Runs the UI until the user quits.
@@ -71,10 +82,14 @@ struct Runtime {
     events: Sender<LoopEvent>,
     inbox: Receiver<LoopEvent>,
     frames: Sender<FrameRequest>,
+    playback: Sender<PlaybackCommand>,
+    encoder: Sender<EncodeRequest>,
     export_cancel: Option<Arc<AtomicBool>>,
-    /// The encoded preview and the (session, frame) it was made from.
-    preview: Option<((u64, u64), StatefulProtocol)>,
+    preview: Option<ShownPreview>,
+    /// The newest frame sent to the encoder, so it is not sent twice.
+    encoding: Option<(FrameKey, Size)>,
     preview_area: Option<Rect>,
+    preview_rate: FrameRateMeter,
     last_tick: Instant,
 }
 
@@ -82,6 +97,18 @@ impl Runtime {
     fn new(start: Start, output_dir: Option<PathBuf>, ffmpeg: Ffmpeg, picker: Picker) -> Self {
         let (events, inbox) = mpsc::channel();
         let frames = spawn_frame_worker(ffmpeg.clone(), events.clone());
+        let playback = {
+            let events = events.clone();
+            spawn_playback_worker(ffmpeg.clone(), move |frame| {
+                events.send(LoopEvent::App(Msg::StreamFrame(frame))).is_ok()
+            })
+        };
+        let encoder = {
+            let events = events.clone();
+            spawn_encoder(picker.clone(), move |encoded| {
+                events.send(LoopEvent::Encoded(encoded)).is_ok()
+            })
+        };
         let (app, effects) = match start {
             Start::Browse(dir) => App::browsing(dir, output_dir),
             Start::Edit { path, media } => (App::editing(path, media, output_dir), Vec::new()),
@@ -94,9 +121,13 @@ impl Runtime {
             events,
             inbox,
             frames,
+            playback,
+            encoder,
             export_cancel: None,
             preview: None,
+            encoding: None,
             preview_area: None,
+            preview_rate: FrameRateMeter::default(),
             last_tick: Instant::now(),
         }
     }
@@ -116,6 +147,7 @@ impl Runtime {
             for event in self.next_events()? {
                 match event {
                     LoopEvent::App(msg) => self.dispatch(msg),
+                    LoopEvent::Encoded(encoded) => self.on_encoded(encoded),
                     LoopEvent::Resized => {}
                     LoopEvent::InputFailed(error) => return Err(TuiError::Terminal(error)),
                 }
@@ -138,10 +170,13 @@ impl Runtime {
                     self.dispatch(Msg::DirectoryListed { dir, result });
                 }
                 Effect::Open(path) => self.open_in_background(path),
-                Effect::RequestFrame(request) => {
-                    // The worker only stops when this sender is dropped.
-                    drop(self.frames.send(request));
+                // The workers only stop when these senders are dropped, so
+                // sending cannot fail while the runtime exists.
+                Effect::RequestFrame(request) => drop(self.frames.send(request)),
+                Effect::StartPlayback(request) => {
+                    drop(self.playback.send(PlaybackCommand::Start(request)));
                 }
+                Effect::StopPlayback => drop(self.playback.send(PlaybackCommand::Stop)),
                 Effect::StartExport(request) => self.start_export(request),
                 Effect::CancelExport => {
                     if let Some(cancel) = &self.export_cancel {
@@ -156,20 +191,16 @@ impl Runtime {
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), TuiError> {
         self.sync_preview();
         let mut image_area = None;
-        let label = protocol_label(self.picker.protocol_type());
-        terminal.draw(|frame| {
-            image_area = view::draw(
-                frame,
-                &self.app,
-                self.preview.as_mut().map(|(_, protocol)| protocol),
-                label,
-            );
-        })?;
-        if let Some((_, protocol)) = &mut self.preview
-            && let Some(Err(error)) = protocol.last_encoding_result()
-        {
-            self.dispatch(Msg::PreviewFailed(error.to_string()));
-        }
+        let fps = self
+            .app
+            .is_playing()
+            .then(|| self.preview_rate.per_second(Instant::now()));
+        let display = PreviewDisplay {
+            image: self.preview.as_ref().map(|preview| &preview.protocol),
+            label: protocol_label(self.picker.protocol_type()),
+            fps,
+        };
+        terminal.draw(|frame| image_area = view::draw(frame, &self.app, &display))?;
         if image_area != self.preview_area {
             self.preview_area = image_area;
             if let Some(area) = image_area {
@@ -180,26 +211,59 @@ impl Runtime {
         Ok(())
     }
 
-    /// Re-encodes the preview for the terminal when a new frame arrived.
+    /// Sends the newest decoded frame to the encoder when the shown preview
+    /// is out of date (new frame, or a resized preview area).
     fn sync_preview(&mut self) {
         let Screen::Editing(session) = self.app.screen() else {
             self.preview = None;
+            self.encoding = None;
             return;
         };
-        let Some(frame) = &session.frame else {
-            self.preview = None;
-            return;
-        };
-        let key = (session.generation(), frame.serial);
         if self
             .preview
             .as_ref()
-            .is_some_and(|(shown, _)| *shown == key)
+            .is_some_and(|preview| preview.key.0 != session.generation())
         {
+            self.preview = None;
+        }
+        let (Some(frame), Some(area)) = (&session.frame, self.preview_area) else {
+            return;
+        };
+        let wanted = ((session.generation(), frame.serial), area.as_size());
+        let is_shown = self
+            .preview
+            .as_ref()
+            .is_some_and(|preview| (preview.key, preview.cells) == wanted);
+        if is_shown || self.encoding == Some(wanted) {
             return;
         }
-        let image = DynamicImage::ImageRgb8(frame.image.clone());
-        self.preview = Some((key, self.picker.new_resize_protocol(image)));
+        self.encoding = Some(wanted);
+        drop(self.encoder.send(EncodeRequest {
+            key: wanted.0,
+            cells: wanted.1,
+            image: frame.image.clone(),
+        }));
+    }
+
+    fn on_encoded(&mut self, encoded: Encoded) {
+        let generation = match self.app.screen() {
+            Screen::Editing(session) => session.generation(),
+            _ => return,
+        };
+        if encoded.key.0 != generation {
+            return;
+        }
+        match encoded.protocol {
+            Ok(protocol) => {
+                self.preview_rate.record(Instant::now());
+                self.preview = Some(ShownPreview {
+                    key: encoded.key,
+                    cells: encoded.cells,
+                    protocol,
+                });
+            }
+            Err(error) => self.dispatch(Msg::PreviewFailed(error)),
+        }
     }
 
     /// Waits for the next event; while playing, also wakes up to advance time.

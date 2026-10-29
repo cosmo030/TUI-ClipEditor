@@ -1,15 +1,19 @@
 //! The terminal user interface.
 //!
-//! - [`app`] — UI state and the pure `update(message) -> effects` function.
-//! - [`session`], [`browser`] — state of the editing screen and file browser.
-//! - [`keys`] — key bindings.
-//! - [`view`], [`timeline`] — drawing; [`preview`] — choosing the image protocol.
-//! - [`runtime`] — the terminal, the event loop, and background workers; the
-//!   only part that performs I/O.
+//! - `app` — UI state and the pure `update(message) -> effects` function.
+//! - `session`, `browser` — state of the editing screen and file browser.
+//! - `keys` — key bindings.
+//! - `view`, `timeline` — drawing; `preview` — choosing the image protocol.
+//! - `playback`, `encoder` — workers that stream frames while playing and
+//!   encode them for the terminal.
+//! - `runtime` — the terminal, the event loop, and the other background
+//!   workers. Together with the workers above, the only code that performs I/O.
 
 mod app;
 mod browser;
+mod encoder;
 mod keys;
+mod playback;
 mod preview;
 mod runtime;
 mod session;

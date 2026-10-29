@@ -5,8 +5,8 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui_image::StatefulImage;
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::Image;
+use ratatui_image::protocol::Protocol;
 
 use super::app::{App, Screen, Status};
 use super::browser::{Browser, EntryKind};
@@ -19,14 +19,20 @@ use crate::clip::Clip;
 const CLIP_LIST_WIDTH: u16 = 44;
 const HIGHLIGHT: Style = Style::new().add_modifier(Modifier::REVERSED);
 
+/// What the runtime has for the preview box.
+#[derive(Default)]
+pub(super) struct PreviewDisplay<'a> {
+    /// The encoded frame, if one is ready.
+    pub(super) image: Option<&'a Protocol>,
+    /// The image mode, for the title (for example `blocks` or `sixel`).
+    pub(super) label: &'a str,
+    /// Preview frames shown per second, while playing.
+    pub(super) fps: Option<usize>,
+}
+
 /// Draws the whole screen. Returns the area available for the preview
 /// image, so the runtime can size frames to it.
-pub(super) fn draw(
-    frame: &mut Frame<'_>,
-    app: &App,
-    preview: Option<&mut StatefulProtocol>,
-    preview_label: &str,
-) -> Option<Rect> {
+pub(super) fn draw(frame: &mut Frame<'_>, app: &App, preview: &PreviewDisplay<'_>) -> Option<Rect> {
     let area = frame.area();
     match app.screen() {
         Screen::Starting => {
@@ -37,13 +43,7 @@ pub(super) fn draw(
             draw_browser(frame, area, browser, app.status());
             None
         }
-        Screen::Editing(session) => Some(draw_editor(
-            frame,
-            area,
-            session,
-            app.status(),
-            (preview, preview_label),
-        )),
+        Screen::Editing(session) => Some(draw_editor(frame, area, session, app.status(), preview)),
     }
 }
 
@@ -78,7 +78,7 @@ fn draw_editor(
     area: Rect,
     session: &Session,
     status: Option<&Status>,
-    preview: (Option<&mut StatefulProtocol>, &str),
+    preview: &PreviewDisplay<'_>,
 ) -> Rect {
     let [
         title_area,
@@ -138,25 +138,45 @@ fn title_line(session: &Session) -> Line<'static> {
     ])
 }
 
-/// Draws the preview box; its title names the image mode in use (for
-/// example `blocks` or `sixel`) so a mode the terminal cannot show is easy
-/// to spot and override with `--preview`.
+/// Draws the preview box with the image centred in it. The title names the
+/// image mode (so a mode the terminal cannot show is easy to spot and
+/// override with `--preview`) and, while playing, the frames shown per second.
 fn draw_preview(
     frame: &mut Frame<'_>,
     area: Rect,
     session: &Session,
-    (preview, label): (Option<&mut StatefulProtocol>, &str),
+    preview: &PreviewDisplay<'_>,
 ) -> Rect {
-    let block = Block::bordered().title(format!(" Preview · {label} "));
+    let rate = preview
+        .fps
+        .map(|fps| format!(" · {fps} fps"))
+        .unwrap_or_default();
+    let block = Block::bordered().title(format!(" Preview · {}{rate} ", preview.label));
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    match (preview, &session.frame) {
+    match (preview.image, &session.frame) {
         (Some(protocol), Some(_)) => {
-            frame.render_stateful_widget(StatefulImage::default(), inner, protocol)
+            let size = protocol.size();
+            frame.render_widget(
+                Image::new(protocol),
+                centered(inner, size.width, size.height),
+            );
         }
         _ => frame.render_widget(Paragraph::new("Loading preview…".dim()), inner),
     }
     inner
+}
+
+/// A `width` × `height` rectangle centred in `area`, shrunk to fit.
+fn centered(area: Rect, width: u16, height: u16) -> Rect {
+    let width = width.min(area.width);
+    let height = height.min(area.height);
+    Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    )
 }
 
 fn draw_clip_list(frame: &mut Frame<'_>, area: Rect, session: &Session) {
@@ -380,10 +400,20 @@ mod tests {
     }
 
     fn render(app: &App) -> String {
+        render_with(
+            app,
+            &PreviewDisplay {
+                label: "blocks",
+                ..PreviewDisplay::default()
+            },
+        )
+    }
+
+    fn render_with(app: &App, display: &PreviewDisplay<'_>) -> String {
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
             .draw(|frame| {
-                draw(frame, app, None, "blocks");
+                draw(frame, app, display);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -469,6 +499,27 @@ mod tests {
         assert!(screen.contains("Open a video · videos"));
         assert!(screen.contains("▸ trips/"));
         assert!(screen.contains("  a.mp4"));
+    }
+
+    #[test]
+    fn preview_title_shows_the_frame_rate_while_playing() {
+        let app = App::editing(PathBuf::from("trip.mp4"), media(), None);
+        let screen = render_with(
+            &app,
+            &PreviewDisplay {
+                label: "sixel",
+                fps: Some(24),
+                ..PreviewDisplay::default()
+            },
+        );
+        assert!(screen.contains("Preview · sixel · 24 fps"));
+    }
+
+    #[test]
+    fn centered_places_the_image_in_the_middle() {
+        let area = Rect::new(2, 1, 100, 40);
+        assert_eq!(centered(area, 60, 20), Rect::new(22, 11, 60, 20));
+        assert_eq!(centered(area, 200, 50), area, "never larger than the area");
     }
 
     #[test]

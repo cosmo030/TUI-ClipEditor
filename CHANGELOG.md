@@ -12,6 +12,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - `-o/--output-dir` option, `--help`, and `--version`.
 - Quality gates: rustfmt, clippy, tests on Ubuntu and Windows, cargo-deny, and gitleaks in CI.
 - `-p/--preview <auto|blocks|sixel|kitty|iterm2>` option; the preview title shows the mode in use.
+- Smooth playback: while playing, the preview streams frames from one ffmpeg process (up to 30 fps) instead of seeking for every frame, and the title shows the preview frame rate. Previews are encoded off the UI thread, centred in the preview box, and up to 1920×1080 pixels.
 
 ### Fixed
 

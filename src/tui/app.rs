@@ -13,6 +13,7 @@ use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
 
 use super::browser::{Browser, Entry, EntryKind};
 use super::keys::{self, BrowseAction};
+use super::playback::{PlaybackRequest, StreamedFrame};
 use super::session::{Leave, Session};
 use crate::clip::Clip;
 use crate::export::{ExportJob, ExportMode};
@@ -31,6 +32,8 @@ pub(crate) enum Msg {
     PreviewBounds((u32, u32)),
     /// A preview frame finished decoding.
     FrameDecoded(DecodedFrame),
+    /// The playback stream delivered a frame (or failed).
+    StreamFrame(StreamedFrame),
     /// The decoded frame could not be encoded for the terminal.
     PreviewFailed(String),
     /// A video finished probing.
@@ -79,6 +82,10 @@ pub(crate) enum Effect {
     ListDirectory(PathBuf),
     Open(PathBuf),
     RequestFrame(FrameRequest),
+    /// Feed the preview from a playback stream (replacing any running one).
+    StartPlayback(PlaybackRequest),
+    /// Stop the playback stream.
+    StopPlayback,
     StartExport(ExportRequest),
     CancelExport,
 }
@@ -202,6 +209,11 @@ impl App {
                     session.on_frame(frame, &mut self.status);
                 }
             }
+            Msg::StreamFrame(frame) => {
+                if let Screen::Editing(session) = &mut self.screen {
+                    session.on_stream_frame(frame, &mut self.status);
+                }
+            }
             Msg::PreviewFailed(error) => {
                 self.status = Some(Status::error(format!("Preview failed: {error}")));
             }
@@ -214,7 +226,7 @@ impl App {
             }
         }
         if let Screen::Editing(session) = &mut self.screen {
-            session.request_frame_if_needed(self.preview_bounds, &mut effects);
+            session.sync_preview_source(self.preview_bounds, &mut effects);
         }
         effects
     }
