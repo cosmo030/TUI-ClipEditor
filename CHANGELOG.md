@@ -1,0 +1,13 @@
+# Changelog
+
+All notable changes are listed here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
+
+## [Unreleased]
+
+### Added
+
+- `clipedit` terminal clip editor: open a video from the command line or a file browser, preview frames in the terminal (sixel, kitty, iTerm2, or half-blocks), play, seek, and step frames.
+- Mark clips with in (`i`) and out (`o`) points; list, select, jump to, and delete clips; timeline showing clips, the in point, and the playhead.
+- Export all clips with **Fast copy** (stream copy, keeps the container) or **Precise** (re-encode to H.264/AAC MP4), with progress and cancel. Exports never overwrite existing files.
+- `-o/--output-dir` option, `--help`, and `--version`.
+- Quality gates: rustfmt, clippy, tests on Ubuntu and Windows, cargo-deny, and gitleaks in CI.

@@ -5,7 +5,7 @@
 //!
 //! - Domain logic (no I/O): [`timecode`], [`media`], [`clip`], [`editor`], [`export`].
 //! - Adapter for the external ffmpeg programs: [`ffmpeg`].
-//! - Command-line interface: [`cli`].
+//! - Command-line interface: [`cli`]; terminal UI: [`tui`].
 
 pub mod cli;
 pub mod clip;
@@ -14,3 +14,4 @@ pub mod export;
 pub mod ffmpeg;
 pub mod media;
 pub mod timecode;
+pub mod tui;

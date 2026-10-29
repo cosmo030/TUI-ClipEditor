@@ -20,6 +20,9 @@ allow = [
     # unicode-ident (via serde/thiserror derive macros): compile-time only,
     # OSI-approved permissive license.
     "Unicode-3.0",
+    # foldhash (hash function used by ratatui's hashbrown): OSI-approved
+    # permissive license.
+    "Zlib",
 ]
 confidence-threshold = 0.9
 
