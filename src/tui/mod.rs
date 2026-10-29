@@ -3,7 +3,8 @@
 //! - `app` — UI state and the pure `update(message) -> effects` function.
 //! - `session`, `browser` — state of the editing screen and file browser.
 //! - `keys` — key bindings.
-//! - `view`, `timeline` — drawing; `preview` — choosing the image protocol.
+//! - `view`, `timeline` — drawing; `preview` — choosing the image protocol;
+//!   `terminal_image` — encoding and drawing preview images.
 //! - `playback`, `encoder` — workers that stream frames while playing and
 //!   encode them for the terminal.
 //! - `runtime` — the terminal, the event loop, and the other background
@@ -17,6 +18,7 @@ mod playback;
 mod preview;
 mod runtime;
 mod session;
+mod terminal_image;
 mod timeline;
 mod view;
 

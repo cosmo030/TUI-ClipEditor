@@ -36,7 +36,7 @@ flowchart LR
 | `cli` | Argument parsing. | No |
 | `tui::app`, `session`, `browser`, `keys` | UI state and the `update(Msg) -> Vec<Effect>` function ([ADR 0002](adr/0002-ui-update-and-effects.md)). | No (except `browser::read_entries`, called by the runtime) |
 | `tui::view`, `timeline` | Drawing the state with ratatui. | No (renders to a buffer) |
-| `tui::playback`, `encoder`, `preview` | Playback stream worker (paced to the clock), terminal-image encoder worker, image-format choice. | Yes (worker threads) |
+| `tui::playback`, `encoder`, `preview`, `terminal_image` | Playback stream worker (paced to the clock), terminal-image encoder worker, image-format choice, sixel encoding and the image widget. | Yes (worker threads) |
 | `tui::runtime` | Terminal setup and restore, the event loop, background threads, performing effects. | Yes |
 
 Dependencies point inward: the UI and the ffmpeg adapter depend on the domain modules; the domain depends on nothing else in the crate.
@@ -49,7 +49,7 @@ Dependencies point inward: the UI and the ffmpeg adapter depend on the domain mo
 4. **Preview.** Frames are sized to the preview area (cells × font size, capped at 1920×1080).
    - *Paused:* the app requests one exact frame at a time at `editor.preview_position()`; a frame worker runs `ffmpeg -ss <t> -i <file> -frames:v 1 … -f rawvideo -pix_fmt rgb24 pipe:1`.
    - *Playing:* the app starts a playback stream (`tui::playback`): one ffmpeg process decodes forward from the playhead at up to 30 fps (`ffmpeg::FrameStream`), and the worker releases each frame when the wall clock reaches it. Seeking while playing starts a new stream; a stream that falls more than 1.5 s behind is restarted at the playhead.
-   - *Drawing:* an encoder worker (`tui::encoder`) turns the newest frame into sixel/kitty/iTerm2/half-block data with `ratatui-image`, skipping frames that went stale; the view draws the result centred. `tui::preview` picks the format: in `auto` mode, only formats the terminal confirmed (or that iTerm2 and WezTerm support by default); otherwise half-blocks, because a wrong guess draws nothing.
+   - *Drawing:* an encoder worker (`tui::encoder`) turns the newest frame into terminal image data, skipping frames that went stale; the view draws the result centred. Sixel is encoded in `tui::terminal_image` (with `icy_sixel`, the encoder `ratatui-image` uses) so that a frame can be drawn over the previous one without first erasing the area, which caused flicker; other formats come from `ratatui-image`. Every screen update is wrapped in synchronized output (DEC mode 2026), so supporting terminals never show a half-written frame. `tui::preview` picks the format: in `auto` mode, only formats the terminal confirmed (or that iTerm2 and WezTerm support by default); otherwise half-blocks, because a wrong guess draws nothing.
 5. **Export.** The runtime plans jobs (`export::plan_exports` with `Path::exists`) and runs them sequentially on a worker thread. Each job creates its output file with `create_new` (so nothing is overwritten), runs ffmpeg with `-progress pipe:1`, and removes its own file on failure or cancel.
 
 ## Processes and safety

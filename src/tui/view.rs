@@ -5,13 +5,12 @@ use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
-use ratatui_image::Image;
-use ratatui_image::protocol::Protocol;
 
 use super::app::{App, Screen, Status};
 use super::browser::{Browser, EntryKind};
 use super::keys::{BROWSER_HINTS, EDITOR_HELP, EDITOR_HINTS};
 use super::session::{ExportRun, Leave, Overlay, Session, count_clips};
+use super::terminal_image::{PreviewImage, TerminalImage};
 use super::timeline::Timeline;
 use crate::clip::Clip;
 
@@ -23,27 +22,37 @@ const HIGHLIGHT: Style = Style::new().add_modifier(Modifier::REVERSED);
 #[derive(Default)]
 pub(super) struct PreviewDisplay<'a> {
     /// The encoded frame, if one is ready.
-    pub(super) image: Option<&'a Protocol>,
+    pub(super) image: Option<&'a TerminalImage>,
     /// The image mode, for the title (for example `blocks` or `sixel`).
     pub(super) label: &'a str,
     /// Preview frames shown per second, while playing.
     pub(super) fps: Option<usize>,
+    /// Where the last frame left an image uncovered ([`Drawn::image`]).
+    pub(super) previous_image: Option<Rect>,
 }
 
-/// Draws the whole screen. Returns the area available for the preview
-/// image, so the runtime can size frames to it.
-pub(super) fn draw(frame: &mut Frame<'_>, app: &App, preview: &PreviewDisplay<'_>) -> Option<Rect> {
+/// Where the preview ended up on screen.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Drawn {
+    /// The area available for the preview image, so frames can be sized to it.
+    pub(super) preview_area: Option<Rect>,
+    /// Where an image was drawn, if nothing (such as a dialog) covers it.
+    pub(super) image: Option<Rect>,
+}
+
+/// Draws the whole screen.
+pub(super) fn draw(frame: &mut Frame<'_>, app: &App, preview: &PreviewDisplay<'_>) -> Drawn {
     let area = frame.area();
     match app.screen() {
         Screen::Starting => {
             frame.render_widget(Paragraph::new("Loading…"), area);
-            None
+            Drawn::default()
         }
         Screen::Browser(browser) => {
             draw_browser(frame, area, browser, app.status());
-            None
+            Drawn::default()
         }
-        Screen::Editing(session) => Some(draw_editor(frame, area, session, app.status(), preview)),
+        Screen::Editing(session) => draw_editor(frame, area, session, app.status(), preview),
     }
 }
 
@@ -79,7 +88,7 @@ fn draw_editor(
     session: &Session,
     status: Option<&Status>,
     preview: &PreviewDisplay<'_>,
-) -> Rect {
+) -> Drawn {
     let [
         title_area,
         main_area,
@@ -99,7 +108,7 @@ fn draw_editor(
             .areas(main_area);
 
     frame.render_widget(title_line(session), title_area);
-    let image_area = draw_preview(frame, preview_area, session, preview);
+    let (image_area, image) = draw_preview(frame, preview_area, session, preview);
     draw_clip_list(frame, clips_area, session);
     draw_timeline(frame, timeline_area, session);
     let playback = if session.editor.is_playing() {
@@ -111,7 +120,12 @@ fn draw_editor(
     frame.render_widget(Paragraph::new(EDITOR_HINTS.dim()), hints_area);
 
     draw_overlay(frame, area, session);
-    image_area
+    Drawn {
+        preview_area: Some(image_area),
+        // A dialog drawn over the image leaves text in its cells, so the
+        // next image must erase first.
+        image: image.filter(|_| matches!(session.overlay, Overlay::None)),
+    }
 }
 
 fn title_line(session: &Session) -> Line<'static> {
@@ -141,12 +155,14 @@ fn title_line(session: &Session) -> Line<'static> {
 /// Draws the preview box with the image centred in it. The title names the
 /// image mode (so a mode the terminal cannot show is easy to spot and
 /// override with `--preview`) and, while playing, the frames shown per second.
+///
+/// Returns the preview area and, if an image was drawn, its rectangle.
 fn draw_preview(
     frame: &mut Frame<'_>,
     area: Rect,
     session: &Session,
     preview: &PreviewDisplay<'_>,
-) -> Rect {
+) -> (Rect, Option<Rect>) {
     let rate = preview
         .fps
         .map(|fps| format!(" · {fps} fps"))
@@ -155,16 +171,20 @@ fn draw_preview(
     let inner = block.inner(area);
     frame.render_widget(block, area);
     match (preview.image, &session.frame) {
-        (Some(protocol), Some(_)) => {
-            let size = protocol.size();
-            frame.render_widget(
-                Image::new(protocol),
-                centered(inner, size.width, size.height),
-            );
+        (Some(image), Some(_)) => {
+            let size = image.size();
+            let rect = centered(inner, size.width, size.height);
+            // Erasing first is only needed when this exact spot did not
+            // already show an image last frame (see `terminal_image`).
+            let erase = preview.previous_image != Some(rect);
+            frame.render_widget(PreviewImage { image, erase }, rect);
+            (inner, Some(rect))
         }
-        _ => frame.render_widget(Paragraph::new("Loading preview…".dim()), inner),
+        _ => {
+            frame.render_widget(Paragraph::new("Loading preview…".dim()), inner);
+            (inner, None)
+        }
     }
-    inner
 }
 
 /// A `width` × `height` rectangle centred in `area`, shrunk to fit.
@@ -384,8 +404,12 @@ mod tests {
     use super::*;
     use crate::media::{FrameRate, MediaInfo, VideoStream};
     use crate::timecode::Timestamp;
-    use crate::tui::app::Msg;
+    use crate::tui::app::{DecodedFrame, Msg};
     use crate::tui::browser::Entry;
+    use crate::tui::terminal_image::encode;
+    use image::RgbImage;
+    use ratatui::layout::Size;
+    use ratatui_image::picker::{Picker, ProtocolType};
 
     fn media() -> MediaInfo {
         MediaInfo {
@@ -513,6 +537,74 @@ mod tests {
             },
         );
         assert!(screen.contains("Preview · sixel · 24 fps"));
+    }
+
+    /// An editor with a decoded frame and that frame encoded as sixel.
+    fn app_with_sixel_frame() -> (App, TerminalImage) {
+        let mut app = App::editing(PathBuf::from("trip.mp4"), media(), None);
+        app.update(Msg::FrameDecoded(DecodedFrame {
+            generation: 1,
+            at: Timestamp::ZERO,
+            size: (40, 40),
+            image: Ok(RgbImage::new(40, 40)),
+        }));
+        let mut picker = Picker::halfblocks();
+        picker.set_protocol_type(ProtocolType::Sixel);
+        let image = encode(&picker, RgbImage::new(40, 40), Size::new(20, 10)).unwrap();
+        (app, image)
+    }
+
+    /// Draws once; returns where things went and the image cell's symbol
+    /// (empty when no uncovered image was drawn).
+    fn draw_image(app: &App, image: &TerminalImage, previous: Option<Rect>) -> (Drawn, String) {
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        let display = PreviewDisplay {
+            image: Some(image),
+            label: "sixel",
+            previous_image: previous,
+            ..PreviewDisplay::default()
+        };
+        let mut drawn = Drawn::default();
+        terminal
+            .draw(|frame| drawn = draw(frame, app, &display))
+            .unwrap();
+        let symbol = drawn
+            .image
+            .map(|rect| {
+                terminal.backend().buffer()[rect.as_position()]
+                    .symbol()
+                    .to_owned()
+            })
+            .unwrap_or_default();
+        (drawn, symbol)
+    }
+
+    #[test]
+    fn first_sixel_frame_erases_and_later_frames_do_not() {
+        let (app, image) = app_with_sixel_frame();
+        let (first, symbol) = draw_image(&app, &image, None);
+        assert!(
+            symbol.starts_with("\x1b[4X"),
+            "erases before the first image"
+        );
+        let (second, symbol) = draw_image(&app, &image, first.image);
+        assert!(
+            symbol.starts_with("\x1bP"),
+            "draws straight over the last image"
+        );
+        assert_eq!(second.image, first.image);
+    }
+
+    #[test]
+    fn a_dialog_over_the_image_forces_the_next_erase() {
+        let (mut app, image) = app_with_sixel_frame();
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::NONE,
+        )));
+        let (drawn, _) = draw_image(&app, &image, None);
+        assert_eq!(drawn.image, None, "help covers the image");
+        assert!(drawn.preview_area.is_some());
     }
 
     #[test]
