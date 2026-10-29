@@ -11,3 +11,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - Export all clips with **Fast copy** (stream copy, keeps the container) or **Precise** (re-encode to H.264/AAC MP4), with progress and cancel. Exports never overwrite existing files.
 - `-o/--output-dir` option, `--help`, and `--version`.
 - Quality gates: rustfmt, clippy, tests on Ubuntu and Windows, cargo-deny, and gitleaks in CI.
+- `-p/--preview <auto|blocks|sixel|kitty|iterm2>` option; the preview title shows the mode in use.
+
+### Fixed
+
+- The preview stayed blank in VS Code's terminal (and other terminals guessed from `TERM_PROGRAM`): image formats are now used only when the terminal confirms them or supports them by default; otherwise the preview uses half-blocks.

@@ -21,7 +21,9 @@ use super::app::{
     App, DecodedFrame, Effect, ExportEvent, ExportRequest, FrameRequest, Msg, Screen,
 };
 use super::browser::read_entries;
+use super::preview::{create_picker, protocol_label};
 use super::{Start, TuiError, view};
+use crate::cli::PreviewMode;
 use crate::export::{ExportJob, plan_exports};
 use crate::ffmpeg::Ffmpeg;
 
@@ -46,12 +48,15 @@ enum LoopEvent {
 ///
 /// Returns [`TuiError::Terminal`] if the terminal cannot be set up, drawn
 /// to, read from, or restored.
-pub fn run(start: Start, output_dir: Option<PathBuf>, ffmpeg: Ffmpeg) -> Result<(), TuiError> {
+pub fn run(
+    start: Start,
+    output_dir: Option<PathBuf>,
+    preview: PreviewMode,
+    ffmpeg: Ffmpeg,
+) -> Result<(), TuiError> {
     let mut terminal = ratatui::try_init()?;
-    // Must run after entering the alternate screen and before anything reads
-    // terminal events. Terminals that do not answer get the half-block
-    // fallback, which works everywhere, so the error itself is not shown.
-    let picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+    // Queries the terminal, so it must run before the input reader starts.
+    let picker = create_picker(preview);
     let result = Runtime::new(start, output_dir, ffmpeg, picker).run(&mut terminal);
     let restored = ratatui::try_restore();
     result?;
@@ -151,11 +156,13 @@ impl Runtime {
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), TuiError> {
         self.sync_preview();
         let mut image_area = None;
+        let label = protocol_label(self.picker.protocol_type());
         terminal.draw(|frame| {
             image_area = view::draw(
                 frame,
                 &self.app,
                 self.preview.as_mut().map(|(_, protocol)| protocol),
+                label,
             );
         })?;
         if let Some((_, protocol)) = &mut self.preview

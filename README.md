@@ -43,6 +43,7 @@ clipedit [OPTIONS] [VIDEO]
 
   VIDEO                   Video to open. Without it (or with a folder), a file browser opens.
   -o, --output-dir <DIR>  Write exported clips to DIR (default: the video's folder)
+  -p, --preview <MODE>    How to draw the preview: auto (default), blocks, sixel, kitty, or iterm2
   -h, --help              Print help
   -V, --version           Print the version
 ```
@@ -82,7 +83,13 @@ Each clip is written as `<video name>_<start>_<end>.<ext>`, for example `holiday
 
 ### The preview
 
-The preview uses the best image support your terminal offers: sixel (Windows Terminal 1.22+, foot, WezTerm, …), the kitty graphics protocol, or iTerm2 inline images. Other terminals get a coarser picture made of colored half-block characters. Each preview frame is decoded by ffmpeg on demand, so playback in the preview is smooth enough to find a spot but not full frame rate.
+The preview title shows how the picture is drawn, for example `Preview · blocks`.
+
+- **`auto`** (default) uses sharp images only when the terminal confirms it supports them (sixel or the kitty graphics protocol), or for terminals that show iTerm2 inline images out of the box (iTerm2, WezTerm). Everything else gets a coarser picture made of colored half-block characters, which works in every terminal.
+- **`--preview sixel`, `kitty`, or `iterm2`** forces that image format, for terminals that support it but are not detected.
+- **`--preview blocks`** always uses half-blocks.
+
+Each preview frame is decoded by ffmpeg on demand, so playback in the preview is smooth enough to find a spot but not full frame rate.
 
 ## Troubleshooting
 
@@ -91,10 +98,15 @@ The preview uses the best image support your terminal offers: sixel (Windows Ter
 **Cause:** ffmpeg or ffprobe is not installed, or its folder is not on `PATH`.
 **Fix:** Install ffmpeg (see [Quick Start](#quick-start)), open a new terminal, and check that `ffmpeg -version` and `ffprobe -version` both work.
 
+### The preview is empty
+
+**Cause:** An image format was forced with `--preview` that the terminal does not display. Terminals drop images they cannot show without any error.
+**Fix:** Run without `--preview` (or with `--preview blocks`). The preview title shows the mode in use.
+
 ### The preview looks blocky
 
-**Cause:** The terminal does not support sixel, kitty, or iTerm2 graphics, so half-blocks are used.
-**Fix:** Use a terminal with graphics support, for example Windows Terminal 1.22 or newer, WezTerm, kitty, or foot.
+**Cause:** The terminal did not confirm support for sixel, kitty, or iTerm2 images, so half-blocks are used.
+**Fix:** Use a terminal with graphics support (Windows Terminal 1.22 or newer, WezTerm, kitty, foot), or force a format you know works with `--preview sixel`, `kitty`, or `iterm2`. In VS Code's terminal, turn on the `terminal.integrated.enableImages` setting first, then use `--preview iterm2`.
 
 ### A fast-copy clip starts too early
 

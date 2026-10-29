@@ -34,7 +34,7 @@ fn run(options: RunOptions) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match tui::run(start, options.output_dir, ffmpeg) {
+    match tui::run(start, options.output_dir, options.preview, ffmpeg) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             print_error(&error.to_string());
