@@ -15,11 +15,47 @@ This file contains the project-specific facts the standards rely on. Where this 
 
 ## Technology Stack
 
-Rust with ratatui, calling the user's installed ffmpeg. Details and versions are recorded with the project scaffold.
+Decision record: [docs/adr/0001-rust-ratatui-and-external-ffmpeg.md](docs/adr/0001-rust-ratatui-and-external-ffmpeg.md).
+
+| Area | Choice |
+|---|---|
+| Language and version | Rust 1.99.1, edition 2024 (pinned in `rust-toolchain.toml`) |
+| Framework | ratatui 0.30 (crossterm backend), ratatui-image 11 |
+| Package manager | Cargo (lockfile: `Cargo.lock`) |
+| Database / migrations | None |
+| External programs | ffmpeg and ffprobe, found on `PATH` at startup |
+| Test framework | Built-in `cargo test` (unit tests in modules, integration tests in `tests/`) |
+| Formatter / linter / type checker | rustfmt / clippy (`-D warnings`, rules in `Cargo.toml` and `clippy.toml`) / rustc |
+| Security scanning | cargo-deny (advisories, licenses, sources), gitleaks (secrets) |
+| CI/CD platform | GitHub Actions (`.github/workflows/ci.yml`); Dependabot for updates |
+| Hosting / deployment target | None; users run the binary locally |
 
 ## Commands
 
-Added together with the project scaffold.
+Run all commands from the repository root. On Windows, run `scripts/check.sh` from Git Bash. Tool prerequisites are listed in [CONTRIBUTING.md](CONTRIBUTING.md#prerequisites).
+
+| Purpose | Command |
+|---|---|
+| Install dependencies | `cargo fetch --locked` |
+| Run the application locally | `cargo run -- [VIDEO]` |
+| Format (write) | `cargo fmt --all` |
+| Format (check only) | `scripts/check.sh fmt` |
+| Lint and type check | `scripts/check.sh lint` |
+| Unit and integration tests (need ffmpeg) | `scripts/check.sh test` |
+| Build | `scripts/check.sh build` |
+| Dependency scan | `scripts/check.sh deny` |
+| Secret scan | `scripts/check.sh secrets` |
+| **All checks (what CI runs)** | `scripts/check.sh` |
+
+## Repository Layout
+
+```text
+src/             Library modules and the thin `clipedit` binary (src/main.rs)
+tests/           Integration tests (run real ffmpeg on generated media)
+scripts/         check.sh: the single entry point for all checks
+docs/adr/        Architecture decision records
+.github/         CI workflow, Dependabot, pull request template
+```
 
 ## Environments and Deployment
 

@@ -4,7 +4,7 @@ A terminal video clip editor: open a video, scrub through it with an in-terminal
 
 **Status:** In development · **Tier:** 1 (see [AGENTS.md](AGENTS.md))
 
-Setup and usage instructions are added together with the application code.
+Usage instructions are added together with the editor. To build and run the checks, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
