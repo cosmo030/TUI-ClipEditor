@@ -16,8 +16,44 @@ current directory.
 
 Options:
   -o, --output-dir <DIR>  Write exported clips to DIR (default: the video's directory)
+  -p, --preview <MODE>    How to draw the preview: auto, blocks, sixel, kitty, or iterm2
+                          (default: auto, which falls back to blocks unless the terminal
+                          confirms image support)
   -h, --help              Print this help and exit
   -V, --version           Print the version and exit";
+
+/// How the preview image is drawn in the terminal.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PreviewMode {
+    /// Use an image protocol only when the terminal confirms it; else blocks.
+    #[default]
+    Auto,
+    /// Coloured half-block characters; works in every terminal.
+    Blocks,
+    /// The sixel graphics protocol.
+    Sixel,
+    /// The kitty graphics protocol.
+    Kitty,
+    /// iTerm2 inline images (also used by WezTerm and VS Code with images enabled).
+    Iterm2,
+}
+
+impl PreviewMode {
+    const NAMES: [(&'static str, Self); 5] = [
+        ("auto", Self::Auto),
+        ("blocks", Self::Blocks),
+        ("sixel", Self::Sixel),
+        ("kitty", Self::Kitty),
+        ("iterm2", Self::Iterm2),
+    ];
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(value))
+            .map(|&(_, mode)| mode)
+    }
+}
 
 /// What the user asked the program to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,6 +73,8 @@ pub struct RunOptions {
     pub video: Option<PathBuf>,
     /// Directory for exported clips; `None` uses the video's directory.
     pub output_dir: Option<PathBuf>,
+    /// How to draw the preview.
+    pub preview: PreviewMode,
 }
 
 /// An invalid command line.
@@ -48,6 +86,8 @@ pub enum CliError {
     UnknownOption(String),
     /// More than one video path was given.
     UnexpectedArgument(String),
+    /// `--preview` was given a value it does not accept.
+    InvalidPreviewMode(String),
 }
 
 impl fmt::Display for CliError {
@@ -61,6 +101,10 @@ impl fmt::Display for CliError {
                     "unexpected argument: {argument} (only one VIDEO can be opened)"
                 )
             }
+            Self::InvalidPreviewMode(value) => write!(
+                f,
+                "invalid preview mode: {value} (expected auto, blocks, sixel, kitty, or iterm2)"
+            ),
         }
     }
 }
@@ -95,6 +139,12 @@ where
                     first_error.get_or_insert(CliError::MissingValue("--output-dir"));
                 }
             },
+            "-p" | "--preview" => match parse_preview(args.next()) {
+                Ok(mode) => options.preview = mode,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            },
             option if option.starts_with('-') => {
                 first_error.get_or_insert_with(|| CliError::UnknownOption(option.to_owned()));
             }
@@ -109,6 +159,12 @@ where
         Some(error) => Err(error),
         None => Ok(Command::Run(options)),
     }
+}
+
+fn parse_preview(value: Option<OsString>) -> Result<PreviewMode, CliError> {
+    let value = value.ok_or(CliError::MissingValue("--preview"))?;
+    let text = value.to_string_lossy();
+    PreviewMode::parse(&text).ok_or_else(|| CliError::InvalidPreviewMode(text.into_owned()))
 }
 
 #[cfg(test)]
@@ -130,7 +186,7 @@ mod tests {
             parse(&["holiday.mp4"]),
             Ok(Command::Run(RunOptions {
                 video: Some(PathBuf::from("holiday.mp4")),
-                output_dir: None,
+                ..RunOptions::default()
             }))
         );
     }
@@ -140,9 +196,38 @@ mod tests {
         let expected = Ok(Command::Run(RunOptions {
             video: Some(PathBuf::from("in.mkv")),
             output_dir: Some(PathBuf::from("clips")),
+            ..RunOptions::default()
         }));
         assert_eq!(parse(&["-o", "clips", "in.mkv"]), expected);
         assert_eq!(parse(&["in.mkv", "--output-dir", "clips"]), expected);
+    }
+
+    #[test]
+    fn preview_defaults_to_auto_and_accepts_every_mode() {
+        assert_eq!(RunOptions::default().preview, PreviewMode::Auto);
+        for (name, mode) in PreviewMode::NAMES {
+            let Ok(Command::Run(options)) = parse(&["--preview", name]) else {
+                panic!("--preview {name} was rejected");
+            };
+            assert_eq!(options.preview, mode);
+        }
+        let Ok(Command::Run(options)) = parse(&["-p", "BLOCKS"]) else {
+            panic!("-p BLOCKS was rejected");
+        };
+        assert_eq!(options.preview, PreviewMode::Blocks, "case-insensitive");
+    }
+
+    #[test]
+    fn preview_rejects_unknown_or_missing_modes() {
+        assert_eq!(
+            parse(&["--preview", "ascii"]),
+            Err(CliError::InvalidPreviewMode("ascii".to_owned()))
+        );
+        assert_eq!(parse(&["-p"]), Err(CliError::MissingValue("--preview")));
+        assert_eq!(
+            CliError::InvalidPreviewMode("ascii".to_owned()).to_string(),
+            "invalid preview mode: ascii (expected auto, blocks, sixel, kitty, or iterm2)"
+        );
     }
 
     #[test]

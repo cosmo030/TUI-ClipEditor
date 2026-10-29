@@ -25,6 +25,7 @@ pub(super) fn draw(
     frame: &mut Frame<'_>,
     app: &App,
     preview: Option<&mut StatefulProtocol>,
+    preview_label: &str,
 ) -> Option<Rect> {
     let area = frame.area();
     match app.screen() {
@@ -36,7 +37,13 @@ pub(super) fn draw(
             draw_browser(frame, area, browser, app.status());
             None
         }
-        Screen::Editing(session) => Some(draw_editor(frame, area, session, app.status(), preview)),
+        Screen::Editing(session) => Some(draw_editor(
+            frame,
+            area,
+            session,
+            app.status(),
+            (preview, preview_label),
+        )),
     }
 }
 
@@ -71,7 +78,7 @@ fn draw_editor(
     area: Rect,
     session: &Session,
     status: Option<&Status>,
-    preview: Option<&mut StatefulProtocol>,
+    preview: (Option<&mut StatefulProtocol>, &str),
 ) -> Rect {
     let [
         title_area,
@@ -131,13 +138,16 @@ fn title_line(session: &Session) -> Line<'static> {
     ])
 }
 
+/// Draws the preview box; its title names the image mode in use (for
+/// example `blocks` or `sixel`) so a mode the terminal cannot show is easy
+/// to spot and override with `--preview`.
 fn draw_preview(
     frame: &mut Frame<'_>,
     area: Rect,
     session: &Session,
-    preview: Option<&mut StatefulProtocol>,
+    (preview, label): (Option<&mut StatefulProtocol>, &str),
 ) -> Rect {
-    let block = Block::bordered().title(" Preview ");
+    let block = Block::bordered().title(format!(" Preview · {label} "));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     match (preview, &session.frame) {
@@ -373,7 +383,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
         terminal
             .draw(|frame| {
-                draw(frame, app, None);
+                draw(frame, app, None, "blocks");
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -396,6 +406,7 @@ mod tests {
         let screen = render(&app);
         assert!(screen.contains("trip.mp4 · 1920×1080 · 29.97 fps · 00:01:00.000 · no audio"));
         assert!(screen.contains("Loading preview…"));
+        assert!(screen.contains("Preview · blocks"), "names the image mode");
         assert!(screen.contains("No clips yet."));
         assert!(screen.contains("00:00:00.000 / 00:01:00.000"));
         assert!(screen.contains("⏸ Paused"));

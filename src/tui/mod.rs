@@ -3,13 +3,14 @@
 //! - [`app`] — UI state and the pure `update(message) -> effects` function.
 //! - [`session`], [`browser`] — state of the editing screen and file browser.
 //! - [`keys`] — key bindings.
-//! - [`view`], [`timeline`] — drawing.
+//! - [`view`], [`timeline`] — drawing; [`preview`] — choosing the image protocol.
 //! - [`runtime`] — the terminal, the event loop, and background workers; the
 //!   only part that performs I/O.
 
 mod app;
 mod browser;
 mod keys;
+mod preview;
 mod runtime;
 mod session;
 mod timeline;
