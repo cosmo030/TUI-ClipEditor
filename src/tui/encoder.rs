@@ -10,11 +10,11 @@ use std::sync::mpsc::{self, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use image::{DynamicImage, RgbImage};
+use image::RgbImage;
 use ratatui::layout::Size;
-use ratatui_image::Resize;
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::Protocol;
+
+use super::terminal_image::{TerminalImage, encode};
 
 /// Identifies a decoded frame: (session generation, frame serial).
 pub(super) type FrameKey = (u64, u64);
@@ -31,7 +31,7 @@ pub(super) struct EncodeRequest {
 pub(super) struct Encoded {
     pub(super) key: FrameKey,
     pub(super) cells: Size,
-    pub(super) protocol: Result<Protocol, String>,
+    pub(super) image: Result<TerminalImage, String>,
 }
 
 impl std::fmt::Debug for Encoded {
@@ -39,7 +39,7 @@ impl std::fmt::Debug for Encoded {
         f.debug_struct("Encoded")
             .field("key", &self.key)
             .field("cells", &self.cells)
-            .field("ok", &self.protocol.is_ok())
+            .field("ok", &self.image.is_ok())
             .finish()
     }
 }
@@ -55,17 +55,10 @@ pub(super) fn spawn_encoder(
         while let Ok(first) = inbox.recv() {
             // Frames queued while the last one was encoding are already old.
             let request = inbox.try_iter().last().unwrap_or(first);
-            let protocol = picker
-                .new_protocol(
-                    DynamicImage::ImageRgb8(request.image),
-                    request.cells,
-                    Resize::Fit(None),
-                )
-                .map_err(|error| error.to_string());
             let encoded = Encoded {
                 key: request.key,
                 cells: request.cells,
-                protocol,
+                image: encode(&picker, request.image, request.cells),
             };
             if !deliver(encoded) {
                 return;
@@ -136,7 +129,7 @@ mod tests {
             .unwrap();
         let encoded = results.recv_timeout(Duration::from_secs(10)).unwrap();
         assert_eq!(encoded.key, (1, 1));
-        let size = encoded.protocol.unwrap().size();
+        let size = encoded.image.unwrap().size();
         assert!(size.width <= 20 && size.height <= 10, "got {size:?}");
     }
 }

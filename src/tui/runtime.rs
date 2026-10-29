@@ -12,9 +12,10 @@ use std::time::{Duration, Instant};
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::layout::{Rect, Size};
 use ratatui_image::picker::Picker;
-use ratatui_image::protocol::Protocol;
 
 use super::app::{
     App, DecodedFrame, Effect, ExportEvent, ExportRequest, FrameRequest, Msg, Screen,
@@ -23,6 +24,7 @@ use super::browser::read_entries;
 use super::encoder::{EncodeRequest, Encoded, FrameKey, FrameRateMeter, spawn_encoder};
 use super::playback::{PlaybackCommand, spawn_playback_worker};
 use super::preview::{create_picker, protocol_label};
+use super::terminal_image::TerminalImage;
 use super::view::PreviewDisplay;
 use super::{Start, TuiError, view};
 use crate::cli::PreviewMode;
@@ -50,7 +52,7 @@ enum LoopEvent {
 struct ShownPreview {
     key: FrameKey,
     cells: Size,
-    protocol: Protocol,
+    image: TerminalImage,
 }
 
 /// Runs the UI until the user quits.
@@ -86,6 +88,9 @@ struct Runtime {
     encoder: Sender<EncodeRequest>,
     export_cancel: Option<Arc<AtomicBool>>,
     preview: Option<ShownPreview>,
+    /// Where the last frame left an image uncovered, so the next image there
+    /// can be drawn without erasing first.
+    last_image: Option<Rect>,
     /// The newest frame sent to the encoder, so it is not sent twice.
     encoding: Option<(FrameKey, Size)>,
     preview_area: Option<Rect>,
@@ -125,6 +130,7 @@ impl Runtime {
             encoder,
             export_cancel: None,
             preview: None,
+            last_image: None,
             encoding: None,
             preview_area: None,
             preview_rate: FrameRateMeter::default(),
@@ -190,17 +196,28 @@ impl Runtime {
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), TuiError> {
         self.sync_preview();
-        let mut image_area = None;
         let fps = self
             .app
             .is_playing()
             .then(|| self.preview_rate.per_second(Instant::now()));
         let display = PreviewDisplay {
-            image: self.preview.as_ref().map(|preview| &preview.protocol),
+            image: self.preview.as_ref().map(|preview| &preview.image),
             label: protocol_label(self.picker.protocol_type()),
             fps,
+            previous_image: self.last_image,
         };
-        terminal.draw(|frame| image_area = view::draw(frame, &self.app, &display))?;
+        let mut drawn = view::Drawn::default();
+        // Synchronized output (DEC mode 2026) asks the terminal to show the
+        // frame only once it is complete, so a half-written image is never
+        // painted. Terminals without support ignore both sequences.
+        execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
+        let result = terminal
+            .draw(|frame| drawn = view::draw(frame, &self.app, &display))
+            .map(|_| ());
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+        result?;
+        self.last_image = drawn.image;
+        let image_area = drawn.preview_area;
         if image_area != self.preview_area {
             self.preview_area = image_area;
             if let Some(area) = image_area {
@@ -253,13 +270,13 @@ impl Runtime {
         if encoded.key.0 != generation {
             return;
         }
-        match encoded.protocol {
-            Ok(protocol) => {
+        match encoded.image {
+            Ok(image) => {
                 self.preview_rate.record(Instant::now());
                 self.preview = Some(ShownPreview {
                     key: encoded.key,
                     cells: encoded.cells,
-                    protocol,
+                    image,
                 });
             }
             Err(error) => self.dispatch(Msg::PreviewFailed(error)),

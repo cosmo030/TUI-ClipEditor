@@ -16,4 +16,6 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ### Fixed
 
+- Sixel playback flickered: every frame first erased the whole preview before the new image arrived. Sixel frames are now drawn straight over the previous frame (erasing only when the image moves, changes size, or was covered by a dialog), and each screen update is sent as one synchronized frame (DEC mode 2026) on terminals that support it.
+
 - The preview stayed blank in VS Code's terminal (and other terminals guessed from `TERM_PROGRAM`): image formats are now used only when the terminal confirms them or supports them by default; otherwise the preview uses half-blocks.
