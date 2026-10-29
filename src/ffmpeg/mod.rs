@@ -8,6 +8,7 @@ mod export;
 mod frame;
 mod probe;
 mod process;
+mod stream;
 
 use std::ffi::OsString;
 use std::io;
@@ -17,6 +18,7 @@ use std::time::Duration;
 pub use export::ExportOutcome;
 pub use frame::fit_within;
 pub use probe::ProbeError;
+pub use stream::FrameStream;
 
 use process::run_with_timeout;
 

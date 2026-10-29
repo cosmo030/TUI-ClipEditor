@@ -89,7 +89,7 @@ The preview title shows how the picture is drawn, for example `Preview · blocks
 - **`--preview sixel`, `kitty`, or `iterm2`** forces that image format, for terminals that support it but are not detected.
 - **`--preview blocks`** always uses half-blocks.
 
-Each preview frame is decoded by ffmpeg on demand, so playback in the preview is smooth enough to find a spot but not full frame rate.
+While you scrub, each position is decoded exactly. While playing, one ffmpeg process streams frames in order (up to 30 per second), and the preview title shows how many frames per second actually reach the screen. Drawing sixel images is the main limit: on a 3440×1440 video with a preview about 1400 pixels wide, expect roughly 20 fps with sixel and 30 fps with blocks.
 
 ## Troubleshooting
 

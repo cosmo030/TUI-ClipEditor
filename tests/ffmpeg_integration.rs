@@ -12,6 +12,7 @@ use tempfile::TempDir;
 use tui_clip_editor::clip::Clip;
 use tui_clip_editor::export::{ExportJob, ExportMode};
 use tui_clip_editor::ffmpeg::{ExportOutcome, Ffmpeg, FfmpegError, ProbeError};
+use tui_clip_editor::media::FrameRate;
 use tui_clip_editor::timecode::Timestamp;
 
 const SOURCE_SECONDS: u64 = 4;
@@ -308,4 +309,46 @@ fn failed_export_removes_its_file_and_reports_ffmpeg_errors() {
         "got: {error:?}"
     );
     assert!(!output.exists(), "the placeholder file was left behind");
+}
+
+#[test]
+fn frame_stream_yields_consecutive_frames_until_the_end() {
+    let (_dir, video) = fixture();
+    let rate = FrameRate::new(10, 1).unwrap();
+    let mut stream = Ffmpeg::from_path()
+        .stream_frames(&video, Timestamp::from_secs(1), (160, 120), rate)
+        .unwrap();
+
+    let mut positions = Vec::new();
+    while let Some((at, frame)) = stream.next_frame().unwrap() {
+        assert_eq!(frame.dimensions(), (160, 120));
+        positions.push(at);
+    }
+
+    // 3 s remain after the start at 10 fps; allow one frame either way.
+    assert!(
+        (29..=31).contains(&positions.len()),
+        "got {} frames",
+        positions.len()
+    );
+    assert_eq!(positions[0], Timestamp::from_secs(1));
+    assert_eq!(positions[1], Timestamp::from_millis(1_100));
+    assert!(stream.next_frame().unwrap().is_none(), "stays ended");
+}
+
+#[test]
+fn dropping_a_frame_stream_stops_ffmpeg_promptly() {
+    let (_dir, video) = fixture();
+    let rate = FrameRate::new(25, 1).unwrap();
+    let mut stream = Ffmpeg::from_path()
+        .stream_frames(&video, Timestamp::ZERO, (160, 120), rate)
+        .unwrap();
+    assert!(stream.next_frame().unwrap().is_some());
+
+    let started = std::time::Instant::now();
+    drop(stream);
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(5),
+        "stopping the stream took too long"
+    );
 }

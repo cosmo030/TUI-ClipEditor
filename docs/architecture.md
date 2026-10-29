@@ -36,6 +36,7 @@ flowchart LR
 | `cli` | Argument parsing. | No |
 | `tui::app`, `session`, `browser`, `keys` | UI state and the `update(Msg) -> Vec<Effect>` function ([ADR 0002](adr/0002-ui-update-and-effects.md)). | No (except `browser::read_entries`, called by the runtime) |
 | `tui::view`, `timeline` | Drawing the state with ratatui. | No (renders to a buffer) |
+| `tui::playback`, `encoder`, `preview` | Playback stream worker (paced to the clock), terminal-image encoder worker, image-format choice. | Yes (worker threads) |
 | `tui::runtime` | Terminal setup and restore, the event loop, background threads, performing effects. | Yes |
 
 Dependencies point inward: the UI and the ffmpeg adapter depend on the domain modules; the domain depends on nothing else in the crate.
@@ -45,7 +46,10 @@ Dependencies point inward: the UI and the ffmpeg adapter depend on the domain mo
 1. **Startup.** `main` checks that `ffmpeg -version` and `ffprobe -version` run, then either probes the video given on the command line or opens the browser.
 2. **Events.** The runtime has one channel. An input thread forwards key presses; worker threads send decoded frames, probe results, and export progress. The loop draws, waits for the next event (or a 33 ms tick while playing), and passes it to `App::update`.
 3. **Effects.** `update` returns effects (`RequestFrame`, `Open`, `ListDirectory`, `StartExport`, `CancelExport`, `Quit`) that the runtime performs.
-4. **Preview.** The app requests one frame at a time at `editor.preview_position()`, sized to the preview area (cells × font size, capped at 1280×720). A frame worker runs `ffmpeg -ss <t> -i <file> -frames:v 1 … -f rawvideo -pix_fmt rgb24 pipe:1`; the runtime turns the RGB image into a sixel/kitty/iTerm2/half-block image with `ratatui-image`. `tui::preview` picks the format: in `auto` mode, only formats the terminal confirmed (or that iTerm2 and WezTerm support by default); otherwise half-blocks, because a wrong guess draws nothing.
+4. **Preview.** Frames are sized to the preview area (cells × font size, capped at 1920×1080).
+   - *Paused:* the app requests one exact frame at a time at `editor.preview_position()`; a frame worker runs `ffmpeg -ss <t> -i <file> -frames:v 1 … -f rawvideo -pix_fmt rgb24 pipe:1`.
+   - *Playing:* the app starts a playback stream (`tui::playback`): one ffmpeg process decodes forward from the playhead at up to 30 fps (`ffmpeg::FrameStream`), and the worker releases each frame when the wall clock reaches it. Seeking while playing starts a new stream; a stream that falls more than 1.5 s behind is restarted at the playhead.
+   - *Drawing:* an encoder worker (`tui::encoder`) turns the newest frame into sixel/kitty/iTerm2/half-block data with `ratatui-image`, skipping frames that went stale; the view draws the result centred. `tui::preview` picks the format: in `auto` mode, only formats the terminal confirmed (or that iTerm2 and WezTerm support by default); otherwise half-blocks, because a wrong guess draws nothing.
 5. **Export.** The runtime plans jobs (`export::plan_exports` with `Path::exists`) and runs them sequentially on a worker thread. Each job creates its output file with `create_new` (so nothing is overwritten), runs ffmpeg with `-progress pipe:1`, and removes its own file on failure or cancel.
 
 ## Processes and safety

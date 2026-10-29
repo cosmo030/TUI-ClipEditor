@@ -8,11 +8,29 @@ use ratatui::crossterm::event::KeyEvent;
 
 use super::app::{DecodedFrame, Effect, ExportEvent, ExportRequest, FrameRequest, Status};
 use super::keys::{self, DialogAction, EditAction};
+use super::playback::{PlaybackRequest, StreamedFrame};
 use crate::editor::Editor;
 use crate::export::{ExportJob, ExportMode, default_output_dir};
 use crate::ffmpeg::{ExportOutcome, fit_within};
 use crate::media::MediaInfo;
 use crate::timecode::Timestamp;
+
+/// Fastest preview frame rate during playback. More frames cost more
+/// decoding and terminal drawing than they add in a terminal preview.
+const PLAYBACK_MAX_FPS: u32 = 30;
+/// How far the playback stream may fall behind the playhead before it is
+/// restarted at the playhead.
+const MAX_PLAYBACK_LAG: Timestamp = Timestamp::from_millis(1_500);
+
+/// The playback stream currently requested.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ActiveStream {
+    id: u64,
+    size: (u32, u32),
+    /// Whether a frame has arrived. The first one is late by ffmpeg's start
+    /// time, so it is not counted as falling behind.
+    has_delivered: bool,
+}
 
 /// Where the user wants to go when leaving the editor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,6 +110,11 @@ pub(crate) struct Session {
     /// not retry it on every tick.
     failed_frame: Option<(Timestamp, (u32, u32))>,
     has_unexported_clips: bool,
+    /// The playback stream the preview is fed from while playing.
+    stream: Option<ActiveStream>,
+    next_stream_id: u64,
+    /// Set when the running stream no longer matches the playhead.
+    restart_stream: bool,
 }
 
 impl Session {
@@ -113,6 +136,9 @@ impl Session {
             frame_in_flight: false,
             failed_frame: None,
             has_unexported_clips: false,
+            stream: None,
+            next_stream_id: 0,
+            restart_stream: false,
         }
     }
 
@@ -192,6 +218,14 @@ impl Session {
     }
 
     fn apply_navigation(&mut self, action: EditAction) {
+        // Jumping while playing continues playback from the new position,
+        // which needs a new stream.
+        if matches!(
+            action,
+            EditAction::Seek(_) | EditAction::JumpToStart | EditAction::JumpToEnd
+        ) {
+            self.restart_stream = true;
+        }
         let editor = &mut self.editor;
         match action {
             EditAction::TogglePlayback => editor.toggle_playback(),
@@ -332,19 +366,7 @@ impl Session {
         }
         self.frame_in_flight = false;
         match frame.image {
-            Ok(image) => {
-                let serial = self
-                    .frame
-                    .as_ref()
-                    .map_or(1, |previous| previous.serial + 1);
-                self.failed_frame = None;
-                self.frame = Some(PreviewFrame {
-                    serial,
-                    at: frame.at,
-                    size: frame.size,
-                    image,
-                });
-            }
+            Ok(image) => self.show_frame(frame.at, frame.size, image),
             Err(error) => {
                 self.failed_frame = Some((frame.at, frame.size));
                 *status = Some(Status::error(format!("Preview failed: {error}")));
@@ -352,17 +374,96 @@ impl Session {
         }
     }
 
-    /// Asks for a new preview frame when the shown one is out of date and no
-    /// request is already running (one at a time keeps ffmpeg from piling up).
-    pub(crate) fn request_frame_if_needed(
-        &mut self,
-        bounds: (u32, u32),
-        effects: &mut Vec<Effect>,
-    ) {
-        if self.frame_in_flight || bounds.0 == 0 || bounds.1 == 0 {
+    /// Handles a frame from the playback stream.
+    pub(crate) fn on_stream_frame(&mut self, frame: StreamedFrame, status: &mut Option<Status>) {
+        let is_current = frame.generation == self.generation
+            && self
+                .stream
+                .is_some_and(|stream| stream.id == frame.stream_id);
+        if !is_current {
+            return;
+        }
+        match frame.image {
+            Ok(image) => {
+                // Decoding slower than real time lets the stream fall behind
+                // the playhead; restarting at the playhead catches up.
+                let is_behind = self.editor.playhead() > frame.at.saturating_add(MAX_PLAYBACK_LAG);
+                if let Some(stream) = &mut self.stream {
+                    if stream.has_delivered && is_behind {
+                        self.restart_stream = true;
+                    }
+                    stream.has_delivered = true;
+                }
+                self.show_frame(frame.at, frame.size, image);
+            }
+            Err(error) => {
+                self.stream = None;
+                self.editor.pause();
+                *status = Some(Status::error(format!("Playback failed: {error}")));
+            }
+        }
+    }
+
+    fn show_frame(&mut self, at: Timestamp, size: (u32, u32), image: RgbImage) {
+        let serial = self
+            .frame
+            .as_ref()
+            .map_or(1, |previous| previous.serial + 1);
+        self.failed_frame = None;
+        self.frame = Some(PreviewFrame {
+            serial,
+            at,
+            size,
+            image,
+        });
+    }
+
+    /// Keeps the preview fed: a playback stream while playing, otherwise
+    /// single frames for the exact position.
+    pub(crate) fn sync_preview_source(&mut self, bounds: (u32, u32), effects: &mut Vec<Effect>) {
+        if bounds.0 == 0 || bounds.1 == 0 {
             return;
         }
         let size = fit_within((self.media.video.width, self.media.video.height), bounds);
+        if self.editor.is_playing() {
+            self.keep_stream_running(size, effects);
+            return;
+        }
+        if self.stream.take().is_some() {
+            effects.push(Effect::StopPlayback);
+        }
+        self.restart_stream = false;
+        self.request_frame_if_needed(size, effects);
+    }
+
+    fn keep_stream_running(&mut self, size: (u32, u32), effects: &mut Vec<Effect>) {
+        let is_running = self.stream.is_some_and(|stream| stream.size == size);
+        if is_running && !self.restart_stream {
+            return;
+        }
+        self.restart_stream = false;
+        self.next_stream_id += 1;
+        self.stream = Some(ActiveStream {
+            id: self.next_stream_id,
+            size,
+            has_delivered: false,
+        });
+        effects.push(Effect::StartPlayback(PlaybackRequest {
+            stream_id: self.next_stream_id,
+            generation: self.generation,
+            path: self.path.clone(),
+            start: self.editor.playhead(),
+            size,
+            rate: self.media.video.frame_rate.capped(PLAYBACK_MAX_FPS),
+        }));
+    }
+
+    /// Asks for a new preview frame when the shown one is out of date and no
+    /// request is already running (one at a time keeps ffmpeg from piling up).
+    fn request_frame_if_needed(&mut self, size: (u32, u32), effects: &mut Vec<Effect>) {
+        if self.frame_in_flight {
+            return;
+        }
         let at = self.editor.preview_position();
         let is_current = self
             .frame
@@ -626,13 +727,13 @@ mod tests {
     fn only_one_frame_request_runs_at_a_time() {
         let mut session = session();
         let mut effects = Vec::new();
-        session.request_frame_if_needed(BOUNDS, &mut effects);
+        session.sync_preview_source(BOUNDS, &mut effects);
         session.editor.seek_by(1_000_000);
-        session.request_frame_if_needed(BOUNDS, &mut effects);
+        session.sync_preview_source(BOUNDS, &mut effects);
         assert_eq!(effects.len(), 1);
 
         session.on_frame(frame(Timestamp::ZERO, 7), &mut None);
-        session.request_frame_if_needed(BOUNDS, &mut effects);
+        session.sync_preview_source(BOUNDS, &mut effects);
         assert_eq!(effects.len(), 2, "the newer position is requested next");
         let Effect::RequestFrame(request) = &effects[1] else {
             panic!("expected a frame request");
@@ -652,7 +753,7 @@ mod tests {
     fn a_failed_frame_is_not_retried_until_something_changes() {
         let mut session = session();
         let mut effects = Vec::new();
-        session.request_frame_if_needed(BOUNDS, &mut effects);
+        session.sync_preview_source(BOUNDS, &mut effects);
         let mut status = None;
         session.on_frame(
             DecodedFrame {
@@ -662,10 +763,10 @@ mod tests {
             &mut status,
         );
         assert_eq!(status.unwrap().text, "Preview failed: decoder exploded");
-        session.request_frame_if_needed(BOUNDS, &mut effects);
+        session.sync_preview_source(BOUNDS, &mut effects);
         assert_eq!(effects.len(), 1, "same position is not retried");
         session.editor.seek_by(40_000);
-        session.request_frame_if_needed(BOUNDS, &mut effects);
+        session.sync_preview_source(BOUNDS, &mut effects);
         assert_eq!(effects.len(), 2);
     }
 
@@ -676,5 +777,117 @@ mod tests {
         assert!(matches!(session.overlay, Overlay::Help));
         press(&mut session, KeyCode::Char('x'));
         assert!(matches!(session.overlay, Overlay::None));
+    }
+
+    fn sync(session: &mut Session) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        session.sync_preview_source(BOUNDS, &mut effects);
+        effects
+    }
+
+    fn started_stream(effects: &[Effect]) -> &PlaybackRequest {
+        match effects {
+            [Effect::StartPlayback(request)] => request,
+            other => panic!("expected one StartPlayback, got {other:?}"),
+        }
+    }
+
+    fn streamed(stream_id: u64, at: Timestamp) -> StreamedFrame {
+        StreamedFrame {
+            stream_id,
+            generation: 7,
+            at,
+            size: (320, 180),
+            image: Ok(RgbImage::new(320, 180)),
+        }
+    }
+
+    #[test]
+    fn playing_starts_a_stream_at_the_playhead() {
+        let mut session = session();
+        session.editor.seek_by(3_000_000);
+        press(&mut session, KeyCode::Char(' '));
+        let effects = sync(&mut session);
+        let request = started_stream(&effects);
+        assert_eq!(request.start, Timestamp::from_secs(3));
+        assert_eq!(request.size, (320, 180));
+        assert_eq!(
+            request.rate,
+            FrameRate::new(25, 1).unwrap(),
+            "25 fps is under the cap"
+        );
+        assert!(sync(&mut session).is_empty(), "a running stream is kept");
+    }
+
+    #[test]
+    fn pausing_stops_the_stream_and_loads_the_exact_frame() {
+        let mut session = session();
+        press(&mut session, KeyCode::Char(' '));
+        sync(&mut session);
+        press(&mut session, KeyCode::Char(' '));
+        let effects = sync(&mut session);
+        assert_eq!(effects[0], Effect::StopPlayback);
+        assert!(matches!(effects[1], Effect::RequestFrame(_)));
+    }
+
+    #[test]
+    fn seeking_while_playing_restarts_the_stream_there() {
+        let mut session = session();
+        press(&mut session, KeyCode::Char(' '));
+        let first = started_stream(&sync(&mut session)).stream_id;
+        press(&mut session, KeyCode::Right);
+        let effects = sync(&mut session);
+        let request = started_stream(&effects);
+        assert!(request.stream_id > first);
+        assert_eq!(request.start, Timestamp::from_secs(1));
+    }
+
+    #[test]
+    fn frames_from_an_older_stream_are_ignored() {
+        let mut session = session();
+        press(&mut session, KeyCode::Char(' '));
+        let first = started_stream(&sync(&mut session)).stream_id;
+        press(&mut session, KeyCode::Right);
+        sync(&mut session);
+        session.on_stream_frame(streamed(first, Timestamp::ZERO), &mut None);
+        assert!(session.frame.is_none());
+    }
+
+    #[test]
+    fn a_stream_far_behind_the_playhead_is_restarted() {
+        let mut session = session();
+        press(&mut session, KeyCode::Char(' '));
+        let id = started_stream(&sync(&mut session)).stream_id;
+        session.tick(Duration::from_secs(2));
+
+        // The first frame is late by ffmpeg's start-up time; that is expected.
+        session.on_stream_frame(streamed(id, Timestamp::ZERO), &mut None);
+        assert!(sync(&mut session).is_empty());
+        assert!(session.frame.is_some());
+
+        // A later frame still 2 s behind means decoding cannot keep up.
+        session.on_stream_frame(streamed(id, Timestamp::from_millis(40)), &mut None);
+        let effects = sync(&mut session);
+        assert_eq!(started_stream(&effects).start, Timestamp::from_secs(2));
+    }
+
+    #[test]
+    fn a_failed_stream_pauses_and_reports_the_error() {
+        let mut session = session();
+        press(&mut session, KeyCode::Char(' '));
+        let id = started_stream(&sync(&mut session)).stream_id;
+        let mut status = None;
+        session.on_stream_frame(
+            StreamedFrame {
+                image: Err("ffmpeg failed: decoder error".to_owned()),
+                ..streamed(id, Timestamp::ZERO)
+            },
+            &mut status,
+        );
+        assert!(!session.editor.is_playing());
+        assert_eq!(
+            status.unwrap().text,
+            "Playback failed: ffmpeg failed: decoder error"
+        );
     }
 }
