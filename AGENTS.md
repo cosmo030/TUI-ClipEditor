@@ -57,6 +57,14 @@ docs/adr/        Architecture decision records
 .github/         CI workflow, Dependabot, pull request template
 ```
 
+## Architecture Notes
+
+- Overview: [docs/architecture.md](docs/architecture.md). ADRs: [docs/adr/](docs/adr/).
+- Domain modules (`timecode`, `media`, `clip`, `editor`, `export`) do no I/O and read no clock; keep them that way.
+- Everything ffmpeg-specific lives in `src/ffmpeg/`; translate its output into domain types there.
+- UI state changes only through `tui::app::App::update(Msg) -> Vec<Effect>` ([ADR 0002](docs/adr/0002-ui-update-and-effects.md)); `tui::runtime` performs the effects. New UI features follow `tui/session.rs` as the reference.
+- Key bindings live in `tui/keys.rs`, together with the help text; update the README key table when they change.
+
 ## Environments and Deployment
 
 - Environments: development (local) and CI (GitHub Actions). There is no server deployment; users build or download the binary and run it locally.
@@ -87,4 +95,7 @@ Changes in these areas are high-risk and require a plan before implementation:
 
 ## Known Gaps
 
-- None yet.
+- No code coverage measurement in CI.
+- macOS is not in the CI matrix.
+- `tui::runtime` (terminal setup, input thread, drawing loop) has no automated test; it is checked by running the app. Its export worker is tested.
+- No release binaries are published; users build with `cargo install`.
