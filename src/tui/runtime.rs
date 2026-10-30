@@ -14,18 +14,20 @@ use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
-use ratatui::layout::{Rect, Size};
+use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
 use super::app::{
     App, DecodedFrame, Effect, ExportEvent, ExportRequest, FrameRequest, Msg, Screen,
 };
 use super::browser::read_entries;
-use super::encoder::{EncodeRequest, Encoded, FrameKey, FrameRateMeter, spawn_encoder};
+use super::encoder::{
+    EncodeRequest, EncodeTarget, Encoded, FrameRateMeter, RollingAverage, spawn_encoder,
+};
 use super::playback::{PlaybackCommand, spawn_playback_worker};
 use super::preview::{create_picker, protocol_label};
-use super::terminal_image::TerminalImage;
-use super::view::PreviewDisplay;
+use super::terminal_image::{Quality, TerminalImage};
+use super::view::{PlaybackStats, PreviewDisplay};
 use super::{Start, TuiError, view};
 use crate::cli::PreviewMode;
 use crate::export::{ExportJob, plan_exports};
@@ -50,9 +52,34 @@ enum LoopEvent {
 
 /// The encoded preview currently on screen.
 struct ShownPreview {
-    key: FrameKey,
-    cells: Size,
+    target: EncodeTarget,
     image: TerminalImage,
+}
+
+/// Where playback time goes, for the preview title: frames reaching the
+/// screen and arriving from the decoder per second, encode and draw time,
+/// and how much image data each frame sends.
+#[derive(Default)]
+struct PlaybackMeter {
+    shown: FrameRateMeter,
+    decoded: FrameRateMeter,
+    encode_ms: RollingAverage,
+    draw_ms: RollingAverage,
+    frame_kb: RollingAverage,
+    /// The last image written to the terminal, to count each one once.
+    last_drawn: Option<EncodeTarget>,
+}
+
+impl PlaybackMeter {
+    fn stats(&mut self, now: Instant) -> PlaybackStats {
+        PlaybackStats {
+            shown_fps: self.shown.per_second(now),
+            decoded_fps: self.decoded.per_second(now),
+            encode_ms: self.encode_ms.value(),
+            draw_ms: self.draw_ms.value(),
+            frame_kb: self.frame_kb.value(),
+        }
+    }
 }
 
 /// Runs the UI until the user quits.
@@ -92,9 +119,9 @@ struct Runtime {
     /// can be drawn without erasing first.
     last_image: Option<Rect>,
     /// The newest frame sent to the encoder, so it is not sent twice.
-    encoding: Option<(FrameKey, Size)>,
+    encoding: Option<EncodeTarget>,
     preview_area: Option<Rect>,
-    preview_rate: FrameRateMeter,
+    meter: PlaybackMeter,
     last_tick: Instant,
 }
 
@@ -133,7 +160,7 @@ impl Runtime {
             last_image: None,
             encoding: None,
             preview_area: None,
-            preview_rate: FrameRateMeter::default(),
+            meter: PlaybackMeter::default(),
             last_tick: Instant::now(),
         }
     }
@@ -152,7 +179,12 @@ impl Runtime {
             }
             for event in self.next_events()? {
                 match event {
-                    LoopEvent::App(msg) => self.dispatch(msg),
+                    LoopEvent::App(msg) => {
+                        if matches!(msg, Msg::StreamFrame(_)) {
+                            self.meter.decoded.record(Instant::now());
+                        }
+                        self.dispatch(msg);
+                    }
                     LoopEvent::Encoded(encoded) => self.on_encoded(encoded),
                     LoopEvent::Resized => {}
                     LoopEvent::InputFailed(error) => return Err(TuiError::Terminal(error)),
@@ -196,16 +228,19 @@ impl Runtime {
 
     fn draw(&mut self, terminal: &mut DefaultTerminal) -> Result<(), TuiError> {
         self.sync_preview();
-        let fps = self
-            .app
-            .is_playing()
-            .then(|| self.preview_rate.per_second(Instant::now()));
+        let now = Instant::now();
+        let stats = self.app.is_playing().then(|| self.meter.stats(now));
         let display = PreviewDisplay {
             image: self.preview.as_ref().map(|preview| &preview.image),
             label: protocol_label(self.picker.protocol_type()),
-            fps,
+            stats,
             previous_image: self.last_image,
         };
+        let new_image = self
+            .preview
+            .as_ref()
+            .filter(|preview| Some(preview.target) != self.meter.last_drawn)
+            .map(|preview| (preview.target, preview.image.byte_len()));
         let mut drawn = view::Drawn::default();
         // Synchronized output (DEC mode 2026) asks the terminal to show the
         // frame only once it is complete, so a half-written image is never
@@ -216,6 +251,18 @@ impl Runtime {
             .map(|_| ());
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         result?;
+        // Writing blocks while the terminal is still busy with earlier
+        // output, so the draw time shows how fast the terminal takes images.
+        if let (Some((target, bytes)), Some(_)) = (new_image, drawn.image) {
+            self.meter.last_drawn = Some(target);
+            self.meter.shown.record(Instant::now());
+            self.meter
+                .draw_ms
+                .record(now.elapsed().as_secs_f64() * 1_000.0);
+            if let Some(bytes) = bytes {
+                self.meter.frame_kb.record(bytes as f64 / 1_024.0);
+            }
+        }
         self.last_image = drawn.image;
         let image_area = drawn.preview_area;
         if image_area != self.preview_area {
@@ -239,25 +286,35 @@ impl Runtime {
         if self
             .preview
             .as_ref()
-            .is_some_and(|preview| preview.key.0 != session.generation())
+            .is_some_and(|preview| preview.target.key.0 != session.generation())
         {
             self.preview = None;
         }
         let (Some(frame), Some(area)) = (&session.frame, self.preview_area) else {
             return;
         };
-        let wanted = ((session.generation(), frame.serial), area.as_size());
+        // Stream frames are drawn lighter while playing; once paused, the
+        // same frame is encoded again at full quality.
+        let quality = if frame.from_stream && session.editor.is_playing() {
+            Quality::Playback
+        } else {
+            Quality::Full
+        };
+        let wanted = EncodeTarget {
+            key: (session.generation(), frame.serial),
+            cells: area.as_size(),
+            quality,
+        };
         let is_shown = self
             .preview
             .as_ref()
-            .is_some_and(|preview| (preview.key, preview.cells) == wanted);
+            .is_some_and(|preview| preview.target == wanted);
         if is_shown || self.encoding == Some(wanted) {
             return;
         }
         self.encoding = Some(wanted);
         drop(self.encoder.send(EncodeRequest {
-            key: wanted.0,
-            cells: wanted.1,
+            target: wanted,
             image: frame.image.clone(),
         }));
     }
@@ -267,15 +324,16 @@ impl Runtime {
             Screen::Editing(session) => session.generation(),
             _ => return,
         };
-        if encoded.key.0 != generation {
+        if encoded.target.key.0 != generation {
             return;
         }
         match encoded.image {
             Ok(image) => {
-                self.preview_rate.record(Instant::now());
+                self.meter
+                    .encode_ms
+                    .record(encoded.took.as_secs_f64() * 1_000.0);
                 self.preview = Some(ShownPreview {
-                    key: encoded.key,
-                    cells: encoded.cells,
+                    target: encoded.target,
                     image,
                 });
             }
