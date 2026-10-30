@@ -7,7 +7,7 @@ Thanks for helping! This file covers the workflow, the checks, and how CI works.
 | Tool | Version | Notes |
 |---|---|---|
 | Rust | 1.99.1 | Installed automatically by `rustup` from [`rust-toolchain.toml`](rust-toolchain.toml). Install rustup from <https://rustup.rs> (Windows: `winget install Rustlang.Rustup`). |
-| ffmpeg and ffprobe | On `PATH`; tested with 7.1 (Windows) and the Ubuntu 24.04 package | Needed to run the app and the integration tests. Windows: `winget install Gyan.FFmpeg`; macOS: `brew install ffmpeg`; Debian/Ubuntu: `sudo apt install ffmpeg`. |
+| ffmpeg and ffprobe | On `PATH`; tested with 7.1 (Windows), the Ubuntu 24.04 package, and the Homebrew formula (macOS) | Needed to run the app and the integration tests. Windows: `winget install Gyan.FFmpeg`; macOS: `brew install ffmpeg`; Debian/Ubuntu: `sudo apt install ffmpeg`. |
 | cargo-deny | 0.20.2 | `cargo install cargo-deny --locked --version 0.20.2` |
 | gitleaks | 8.30.1 | Windows: `winget install Gitleaks.Gitleaks`; macOS: `brew install gitleaks`; others: <https://github.com/gitleaks/gitleaks/releases> |
 | bash | any | Runs `scripts/check.sh`. On Windows, use Git Bash (comes with Git for Windows). |

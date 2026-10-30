@@ -97,6 +97,5 @@ Changes in these areas are high-risk and require a plan before implementation:
 ## Known Gaps
 
 - No code coverage measurement in CI.
-- macOS is not in the CI matrix.
 - `tui::runtime` (terminal setup, input thread, drawing loop) has no automated test; it is checked by running the app. Its export worker is tested.
 - No release binaries are published; users build with `cargo install`.
