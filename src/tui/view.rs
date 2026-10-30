@@ -104,20 +104,13 @@ pub(super) fn draw(
     }
 }
 
-/// A panel: a bordered block on the panel background.
-fn panel<'a>(theme: &Theme, title: impl Into<Line<'a>>) -> Block<'a> {
-    Block::bordered()
-        .border_style(theme.border())
-        .style(Style::new().bg(theme.background_panel).fg(theme.text))
-        .title(title)
-}
-
-/// A dialog: like a panel, on the raised element background.
+/// A dialog: a borderless box on the raised element background, with its
+/// title on the first row (as OpenCode draws its dialogs).
 fn dialog<'a>(theme: &Theme, title: impl Into<Line<'a>>) -> Block<'a> {
-    Block::bordered()
-        .border_style(Style::new().fg(theme.border_active))
+    Block::new()
         .style(Style::new().bg(theme.background_element).fg(theme.text))
-        .title(title)
+        .title(title.into().style(bold(theme)))
+        .padding(Padding::new(1, 1, 0, 1))
 }
 
 /// Most search results shown under the input at once.
@@ -319,6 +312,9 @@ fn count(number: usize, noun: &str) -> String {
     }
 }
 
+/// The editor, in OpenCode's style: a top bar, borderless panels on a
+/// slightly raised background (preview, clips sidebar, timeline), and a
+/// footer with a mode chip, the status message, and key hints.
 fn draw_editor(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -327,38 +323,28 @@ fn draw_editor(
     preview: &PreviewDisplay<'_>,
     theme: &Theme,
 ) -> Drawn {
-    let [
-        title_area,
-        main_area,
-        timeline_area,
-        status_area,
-        hints_area,
-    ] = Layout::vertical([
+    let [top_bar, _, main_area, _, timeline_area, _, footer] = Layout::vertical([
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Min(6),
+        Constraint::Length(1),
         Constraint::Length(3),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
     .areas(area);
-    let [preview_area, clips_area] =
-        Layout::horizontal([Constraint::Min(20), Constraint::Length(CLIP_LIST_WIDTH)])
-            .areas(main_area);
+    let [preview_area, _, clips_area] = Layout::horizontal([
+        Constraint::Min(20),
+        Constraint::Length(1),
+        Constraint::Length(CLIP_LIST_WIDTH),
+    ])
+    .areas(main_area);
 
-    frame.render_widget(title_line(session, theme), title_area);
+    frame.render_widget(title_line(session, theme), top_bar);
     let (image_area, image) = draw_preview(frame, preview_area, session, preview, theme);
     draw_clip_list(frame, clips_area, session, theme);
     draw_timeline(frame, timeline_area, session, theme);
-    let playback = if session.editor.is_playing() {
-        "▶ Playing"
-    } else {
-        "⏸ Paused"
-    };
-    frame.render_widget(status_line(Some(playback), status, theme), status_area);
-    frame.render_widget(
-        Paragraph::new(Span::styled(EDITOR_HINTS, theme.muted())),
-        hints_area,
-    );
+    draw_editor_footer(frame, footer, session, status, theme);
 
     draw_overlay(frame, area, session, theme);
     Drawn {
@@ -367,6 +353,21 @@ fn draw_editor(
         // next image must erase first.
         image: image.filter(|_| matches!(session.overlay, Overlay::None)),
     }
+}
+
+/// A borderless panel on the raised panel background.
+fn surface(theme: &Theme) -> Block<'static> {
+    Block::new()
+        .style(Style::new().bg(theme.background_panel).fg(theme.text))
+        .padding(Padding::horizontal(1))
+}
+
+/// A panel heading: the title in full text, details muted.
+fn heading<'a>(title: &'a str, details: String, theme: &Theme) -> Line<'a> {
+    Line::from(vec![
+        Span::styled(title, bold(theme)),
+        Span::styled(details, theme.muted()),
+    ])
 }
 
 fn title_line(session: &Session, theme: &Theme) -> Line<'static> {
@@ -382,21 +383,25 @@ fn title_line(session: &Session, theme: &Theme) -> Line<'static> {
     };
     Line::from(vec![
         Span::styled(" clipedit ", theme.chip()),
-        Span::raw(format!(
-            " {name} · {}×{} · {:.2} fps · {}{audio}",
-            video.width,
-            video.height,
-            video.frame_rate.frames_per_second(),
-            session.media.duration
-        )),
+        Span::styled(format!(" {name}"), bold(theme)),
+        Span::styled(
+            format!(
+                " · {}×{} · {:.2} fps · {}{audio}",
+                video.width,
+                video.height,
+                video.frame_rate.frames_per_second(),
+                session.media.duration
+            ),
+            theme.muted(),
+        ),
     ])
 }
 
-/// Draws the preview box with the image centred in it. The title names the
-/// image mode (so a mode the terminal cannot show is easy to spot and
-/// override with `--preview`) and, while playing, the frames shown per second.
+/// Draws the preview panel with the image centred in it. The heading names
+/// the image mode (so a mode the terminal cannot show is easy to spot and
+/// override with `--preview`) and, while playing, where the time goes.
 ///
-/// Returns the preview area and, if an image was drawn, its rectangle.
+/// Returns the image area and, if an image was drawn, its rectangle.
 fn draw_preview(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -404,29 +409,35 @@ fn draw_preview(
     preview: &PreviewDisplay<'_>,
     theme: &Theme,
 ) -> (Rect, Option<Rect>) {
+    let block = surface(theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [heading_area, image_area] =
+        Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
     let rate = preview
         .stats
         .map(|stats| format!(" · {}", stats.summary()))
         .unwrap_or_default();
-    let block = panel(theme, format!(" Preview · {}{rate} ", preview.label));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    frame.render_widget(
+        heading("Preview", format!(" · {}{rate}", preview.label), theme),
+        heading_area,
+    );
     match (preview.image, &session.frame) {
         (Some(image), Some(_)) => {
             let size = image.size();
-            let rect = centered(inner, size.width, size.height);
+            let rect = centered(image_area, size.width, size.height);
             // Erasing first is only needed when this exact spot did not
             // already show an image last frame (see `terminal_image`).
             let erase = preview.previous_image != Some(rect);
             frame.render_widget(PreviewImage { image, erase }, rect);
-            (inner, Some(rect))
+            (image_area, Some(rect))
         }
         _ => {
             frame.render_widget(
                 Paragraph::new(Span::styled("Loading preview…", theme.muted())),
-                inner,
+                image_area,
             );
-            (inner, None)
+            (image_area, None)
         }
     }
 }
@@ -443,29 +454,47 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
+/// The clips sidebar; the selected clip gets the accent bar.
 fn draw_clip_list(frame: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) {
+    let block = surface(theme);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [heading_area, _, list_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
     let clips = session.editor.clips();
-    let block = panel(theme, format!(" Clips ({}) ", clips.len()));
+    frame.render_widget(
+        heading("Clips", format!(" ({})", clips.len()), theme),
+        heading_area,
+    );
     if clips.is_empty() {
         let help = Paragraph::new(vec![
             Line::styled("No clips yet.", theme.muted()),
             Line::from(""),
             Line::styled("Press i at the start of a", theme.muted()),
             Line::styled("part and o at its end.", theme.muted()),
-        ])
-        .block(block);
-        frame.render_widget(help, area);
+        ]);
+        frame.render_widget(help, list_area);
         return;
     }
-    let items = clips
-        .iter()
-        .enumerate()
-        .map(|(index, clip)| ListItem::new(clip_row(index, *clip)));
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(theme.selected());
-    let mut state = ListState::default().with_selected(session.editor.selected_index());
-    frame.render_stateful_widget(list, area, &mut state);
+    let selected = session.editor.selected_index();
+    let items = clips.iter().enumerate().map(|(index, clip)| {
+        let row = clip_row(index, *clip);
+        if Some(index) == selected {
+            ListItem::new(Line::from(vec![
+                Span::styled("┃", Style::new().fg(theme.primary)),
+                Span::styled(row, Style::new().add_modifier(Modifier::BOLD)),
+            ]))
+            .style(Style::new().bg(theme.background_element).fg(theme.text))
+        } else {
+            ListItem::new(Line::from(vec![Span::raw(" "), Span::raw(row)]))
+        }
+    });
+    let mut state = ListState::default().with_selected(selected);
+    frame.render_stateful_widget(List::new(items), list_area, &mut state);
 }
 
 fn clip_row(index: usize, clip: Clip) -> String {
@@ -478,23 +507,29 @@ fn clip_row(index: usize, clip: Clip) -> String {
     )
 }
 
+/// The timeline panel: position and in point above, the track below.
 fn draw_timeline(frame: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) {
     let editor = &session.editor;
-    let mut block = panel(
-        theme,
-        format!(" {} / {} ", editor.playhead(), editor.duration()),
-    );
-    if let Some(in_point) = editor.pending_in() {
-        block = block.title_bottom(
-            Line::styled(
-                format!(" in point {in_point} "),
-                Style::new().fg(theme.accent),
-            )
-            .right_aligned(),
-        );
-    }
+    let block = surface(theme).padding(Padding::new(1, 1, 0, 0));
     let inner = block.inner(area);
     frame.render_widget(block, area);
+    let [heading_area, track_area, _] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+    let mut spans = vec![Span::styled(
+        format!("{} / {}", editor.playhead(), editor.duration()),
+        bold(theme),
+    )];
+    if let Some(in_point) = editor.pending_in() {
+        spans.push(Span::styled(
+            format!("   in point {in_point}"),
+            Style::new().fg(theme.accent),
+        ));
+    }
+    frame.render_widget(Line::from(spans), heading_area);
     frame.render_widget(
         Timeline {
             duration: editor.duration(),
@@ -504,8 +539,48 @@ fn draw_timeline(frame: &mut Frame<'_>, area: Rect, session: &Session, theme: &T
             selected: editor.selected_index(),
             theme,
         },
-        inner,
+        track_area,
     );
+}
+
+/// The editor's bottom row: a mode chip and the status on the left, key
+/// hints on the right.
+fn draw_editor_footer(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    session: &Session,
+    status: Option<&Status>,
+    theme: &Theme,
+) {
+    let hints = hint_line(EDITOR_HINTS, theme);
+    let hints_width = u16::try_from(hints.width()).unwrap_or(u16::MAX);
+    let [left, right] = Layout::horizontal([
+        Constraint::Min(0),
+        Constraint::Length(hints_width.saturating_add(1)),
+    ])
+    .areas(area);
+    let chip = if session.editor.is_playing() {
+        Span::styled(" ▶ Playing ", theme.chip())
+    } else {
+        Span::styled(
+            " ⏸ Paused ",
+            Style::new()
+                .bg(theme.background_element)
+                .fg(theme.text)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    let mut spans = vec![chip, Span::raw("  ")];
+    if let Some(status) = status {
+        let color = if status.is_error {
+            theme.error
+        } else {
+            theme.info
+        };
+        spans.push(Span::styled(status.text.as_str(), Style::new().fg(color)));
+    }
+    frame.render_widget(Line::from(spans), left);
+    frame.render_widget(hints.right_aligned(), right);
 }
 
 fn status_line<'a>(
@@ -970,8 +1045,9 @@ mod tests {
         let (x, y) = find(&buffer, "No clips yet.");
         assert_eq!(buffer[(x, y)].fg, Theme::DARK.text_muted);
         assert_eq!(buffer[(x, y)].bg, Theme::DARK.background_panel);
-        let (x, y) = find(&buffer, "Space play");
-        assert_eq!(buffer[(x, y)].fg, Theme::DARK.text_muted);
+        let (x, y) = find(&buffer, "space play");
+        assert_eq!(buffer[(x, y)].fg, Theme::DARK.text, "key in full text");
+        assert_eq!(buffer[(x + 6, y)].fg, Theme::DARK.text_muted, "label muted");
         assert_eq!(buffer[(x, y)].bg, Theme::DARK.background);
         let (x, y) = find(&buffer, "clipedit");
         assert_eq!(buffer[(x, y)].bg, Theme::DARK.primary, "title chip");
@@ -980,9 +1056,44 @@ mod tests {
     #[test]
     fn system_theme_keeps_the_terminal_background() {
         let buffer = render_themed(&Theme::SYSTEM);
-        let (x, y) = find(&buffer, "Space play");
+        let (x, y) = find(&buffer, "space play");
         assert_eq!(buffer[(x, y)].bg, ratatui::style::Color::Reset);
-        assert_eq!(buffer[(x, y)].fg, Theme::SYSTEM.text_muted);
+        assert_eq!(buffer[(x + 6, y)].fg, Theme::SYSTEM.text_muted);
+    }
+
+    #[test]
+    fn editor_uses_borderless_panels() {
+        let screen = render(&App::editing(PathBuf::from("trip.mp4"), media(), None));
+        for corner in ['┌', '┐', '└', '┘'] {
+            assert!(!screen.contains(corner), "found a box corner {corner}");
+        }
+    }
+
+    #[test]
+    fn selected_clip_has_the_accent_bar_on_a_raised_row() {
+        let mut app = App::editing(PathBuf::from("trip.mp4"), media(), None);
+        press(&mut app, KeyCode::Char('i'));
+        press(&mut app, KeyCode::Right);
+        press(&mut app, KeyCode::Char('o'));
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, &app, &PreviewDisplay::default(), &Theme::DARK);
+            })
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        let (x, y) = find(&buffer, "┃ 1 00:00:00.000");
+        assert_eq!(buffer[(x, y)].fg, Theme::DARK.primary);
+        assert_eq!(buffer[(x + 2, y)].bg, Theme::DARK.background_element);
+    }
+
+    #[test]
+    fn footer_shows_the_mode_chip_and_hints() {
+        let buffer = render_themed(&Theme::DARK);
+        let (x, y) = find(&buffer, "⏸ Paused");
+        assert_eq!(buffer[(x, y)].bg, Theme::DARK.background_element);
+        let (_, hints_row) = find(&buffer, "e export");
+        assert_eq!(y, hints_row, "chip and hints share the footer row");
     }
 
     #[test]

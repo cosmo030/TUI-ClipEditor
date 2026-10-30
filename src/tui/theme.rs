@@ -84,19 +84,6 @@ impl Theme {
         Style::new().fg(self.text_muted)
     }
 
-    /// Panel borders.
-    pub(crate) fn border(&self) -> Style {
-        Style::new().fg(self.border)
-    }
-
-    /// The selected row of a list.
-    pub(crate) fn selected(&self) -> Style {
-        Style::new()
-            .bg(self.background_element)
-            .fg(self.primary)
-            .add_modifier(Modifier::BOLD)
-    }
-
     /// A small label with a filled background, like the `clipedit` title.
     pub(crate) fn chip(&self) -> Style {
         Style::new()
