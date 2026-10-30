@@ -3,7 +3,8 @@
 //! - `app` — UI state and the pure `update(message) -> effects` function.
 //! - `session`, `browser` — state of the editing screen and file browser.
 //! - `keys` — key bindings.
-//! - `view`, `timeline` — drawing; `preview` — choosing the image protocol;
+//! - `view`, `timeline` — drawing; `theme` — the colours they use;
+//!   `preview` — choosing the image protocol;
 //!   `terminal_image` — encoding and drawing preview images.
 //! - `playback`, `encoder` — workers that stream frames while playing and
 //!   encode them for the terminal.
@@ -19,15 +20,28 @@ mod preview;
 mod runtime;
 mod session;
 mod terminal_image;
+mod theme;
 mod timeline;
 mod view;
 
 use std::io;
 use std::path::PathBuf;
 
+use crate::cli::{PreviewMode, ThemeChoice};
 use crate::media::MediaInfo;
 
 pub use runtime::run;
+
+/// Options that shape the UI, from the command line.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Settings {
+    /// `--output-dir`; `None` uses each video's directory.
+    pub output_dir: Option<PathBuf>,
+    /// `--preview`.
+    pub preview: PreviewMode,
+    /// `--theme`.
+    pub theme: ThemeChoice,
+}
 
 /// What the UI shows first.
 #[derive(Debug, Clone, PartialEq, Eq)]

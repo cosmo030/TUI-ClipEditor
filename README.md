@@ -44,6 +44,7 @@ clipedit [OPTIONS] [VIDEO]
   VIDEO                   Video to open. Without it (or with a folder), a file browser opens.
   -o, --output-dir <DIR>  Write exported clips to DIR (default: the video's folder)
   -p, --preview <MODE>    How to draw the preview: auto (default), blocks, sixel, kitty, or iterm2
+  -t, --theme <THEME>     Colours: auto (default), dark, or system
   -h, --help              Print help
   -V, --version           Print the version
 ```
@@ -100,6 +101,12 @@ While playing, the preview title shows where the time goes, for example `Preview
 | `encode` | Time to turn a frame into terminal image data. |
 | `draw` | Time to write a frame to the terminal. High means the terminal is the limit; a smaller window helps. |
 | `KB` | Image data per frame (sixel only). |
+
+### Themes
+
+- **`dark`** — a 24-bit dark theme in the style of OpenCode's terminal UI.
+- **`system`** — your terminal's own colours and background; use it on terminals without 24-bit colour.
+- **`auto`** (default) picks `dark` when the terminal supports 24-bit colour (`COLORTERM=truecolor`, Windows Terminal, iTerm2, WezTerm, VS Code) and `system` otherwise.
 
 ## Troubleshooting
 
