@@ -29,9 +29,16 @@ pub(super) const EDITOR_HELP: &[(&str, &str)] = &[
     ("q  Ctrl+C", "quit"),
 ];
 
-/// Short key hints for the bottom line of the editor.
-pub(super) const EDITOR_HINTS: &str =
-    "Space play  ←→ seek  ,. frame  i in  o out  ↑↓ select  d delete  e export  ? help  q quit";
+/// Key hints for the editor's footer (the full list is in the help).
+pub(super) const EDITOR_HINTS: &[(&str, &str)] = &[
+    ("space", "play"),
+    ("←→", "seek"),
+    ("i", "in"),
+    ("o", "out"),
+    ("e", "export"),
+    ("?", "keys"),
+    ("q", "quit"),
+];
 
 /// Short key hints for the file browser.
 pub(super) const HOME_HINTS: &[(&str, &str)] = &[
