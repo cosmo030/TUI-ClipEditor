@@ -34,7 +34,7 @@ flowchart LR
 | `export` | Export modes and job planning with collision-free file names (existence check passed in). | No |
 | `ffmpeg` | The only code that knows ffmpeg: command lines, ffprobe JSON, `-progress` output, process timeouts and tree kills, output-file reservation. | Yes |
 | `cli` | Argument parsing. | No |
-| `tui::app`, `session`, `browser`, `keys` | UI state and the `update(Msg) -> Vec<Effect>` function ([ADR 0002](adr/0002-ui-update-and-effects.md)). | No (except `browser::read_entries`, called by the runtime) |
+| `tui::app`, `session`, `browser`, `fuzzy`, `keys` | UI state (editor; home-screen folder search with ranked matching) and the `update(Msg) -> Vec<Effect>` function ([ADR 0002](adr/0002-ui-update-and-effects.md)). | No (except `browser::read_entries`, called by the runtime) |
 | `tui::view`, `timeline`, `theme` | Drawing the state with ratatui, in colours from the theme tokens ([ADR 0003](adr/0003-design-system-and-themes.md)). | No (renders to a buffer) |
 | `tui::playback`, `encoder`, `preview`, `terminal_image` | Playback stream worker (paced to the clock), terminal-image encoder worker, image-format choice, sixel encoding and the image widget. | Yes (worker threads) |
 | `tui::runtime` | Terminal setup and restore, the event loop, background threads, performing effects. | Yes |
@@ -43,7 +43,7 @@ Dependencies point inward: the UI and the ffmpeg adapter depend on the domain mo
 
 ## Data flow
 
-1. **Startup.** `main` checks that `ffmpeg -version` and `ffprobe -version` run, then either probes the video given on the command line or opens the browser.
+1. **Startup.** `main` checks that `ffmpeg -version` and `ffprobe -version` run, then either probes the video given on the command line or opens the home screen (a search over the folder's subfolders and videos).
 2. **Events.** The runtime has one channel. An input thread forwards key presses; worker threads send decoded frames, probe results, and export progress. The loop draws, waits for the next event (or a 33 ms tick while playing), and passes it to `App::update`.
 3. **Effects.** `update` returns effects (`RequestFrame`, `Open`, `ListDirectory`, `StartExport`, `CancelExport`, `Quit`) that the runtime performs.
 4. **Preview.** Frames are sized to the preview area (cells × font size, capped at 1920×1080).

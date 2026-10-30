@@ -34,7 +34,13 @@ pub(super) const EDITOR_HINTS: &str =
     "Space play  ←→ seek  ,. frame  i in  o out  ↑↓ select  d delete  e export  ? help  q quit";
 
 /// Short key hints for the file browser.
-pub(super) const BROWSER_HINTS: &str = "↑↓ select  Enter open  Backspace up a folder  q quit";
+pub(super) const HOME_HINTS: &[(&str, &str)] = &[
+    ("enter", "open"),
+    ("tab", "into folder"),
+    ("↑↓", "select"),
+    ("backspace", "up a folder"),
+    ("esc", "quit"),
+];
 
 /// What a key does in the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,14 +71,21 @@ pub(super) enum DialogAction {
     Cancel,
 }
 
-/// What a key does in the file browser.
+/// What a key does on the home screen, where typing searches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum BrowseAction {
+pub(super) enum HomeAction {
     Previous,
     Next,
+    /// Open the selected video or folder, or the typed path.
     Open,
-    Parent,
+    /// Go into the selected folder.
+    EnterFolder,
+    /// Delete a search character, or go up a folder when the search is empty.
+    Backspace,
+    /// Clear the search, or quit when it is empty.
+    ClearOrQuit,
     Quit,
+    Type(char),
 }
 
 fn is_ctrl_c(key: KeyEvent) -> bool {
@@ -122,18 +135,27 @@ pub(super) fn dialog_action(key: KeyEvent) -> Option<DialogAction> {
     }
 }
 
-pub(super) fn browse_action(key: KeyEvent) -> Option<BrowseAction> {
+pub(super) fn home_action(key: KeyEvent) -> Option<HomeAction> {
     if is_ctrl_c(key) {
-        return Some(BrowseAction::Quit);
+        return Some(HomeAction::Quit);
     }
-    match key.code {
-        KeyCode::Up | KeyCode::Char('k') => Some(BrowseAction::Previous),
-        KeyCode::Down | KeyCode::Char('j') => Some(BrowseAction::Next),
-        KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => Some(BrowseAction::Open),
-        KeyCode::Backspace | KeyCode::Left | KeyCode::Char('h') => Some(BrowseAction::Parent),
-        KeyCode::Char('q') | KeyCode::Esc => Some(BrowseAction::Quit),
-        _ => None,
-    }
+    let action = match key.code {
+        KeyCode::Up => HomeAction::Previous,
+        KeyCode::Down => HomeAction::Next,
+        KeyCode::Enter => HomeAction::Open,
+        KeyCode::Tab | KeyCode::Right => HomeAction::EnterFolder,
+        KeyCode::Backspace => HomeAction::Backspace,
+        KeyCode::Esc => HomeAction::ClearOrQuit,
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            HomeAction::Type(character)
+        }
+        _ => return None,
+    };
+    Some(action)
 }
 
 /// `Some(true)` for yes, `Some(false)` for no, `None` for other keys.
@@ -195,10 +217,33 @@ mod tests {
     #[test]
     fn ctrl_c_quits_or_cancels_everywhere() {
         assert_eq!(edit_action(ctrl_c()), Some(EditAction::Quit));
-        assert_eq!(browse_action(ctrl_c()), Some(BrowseAction::Quit));
+        assert_eq!(home_action(ctrl_c()), Some(HomeAction::Quit));
         assert_eq!(dialog_action(ctrl_c()), Some(DialogAction::Cancel));
         assert_eq!(confirm_answer(ctrl_c()), Some(false));
         assert!(cancels_export(ctrl_c()));
+    }
+
+    #[test]
+    fn home_keys_type_letters_and_navigate_with_arrows() {
+        assert_eq!(
+            home_action(key(KeyCode::Char('q'))),
+            Some(HomeAction::Type('q'))
+        );
+        assert_eq!(
+            home_action(shifted(KeyCode::Char('B'))),
+            Some(HomeAction::Type('B'))
+        );
+        assert_eq!(home_action(key(KeyCode::Down)), Some(HomeAction::Next));
+        assert_eq!(
+            home_action(key(KeyCode::Tab)),
+            Some(HomeAction::EnterFolder)
+        );
+        assert_eq!(
+            home_action(key(KeyCode::Esc)),
+            Some(HomeAction::ClearOrQuit)
+        );
+        let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
+        assert_eq!(home_action(ctrl_x), None, "control keys are not typed");
     }
 
     #[test]
