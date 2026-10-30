@@ -16,6 +16,7 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - Faster sixel playback on large, grainy videos: frames shown while playing use 64 colours without dithering (about half the data; the paused frame is redrawn at full quality), and the playback stream decodes on the GPU where available (`-hwaccel auto`) with a faster scaler.
 - OpenCode-style home screen: the `clipedit` wordmark, a search box that filters the folder's subfolders and videos as you type (or opens a typed path), the matches with the selected one marked, key hints, and a footer with the folder and version. Replaces the plain file list.
 - OpenCode-style editor: a top bar with the file details, borderless panels on a raised background for the preview, clips sidebar (the selected clip gets an accent bar), and timeline, borderless dialogs, and a footer with a Paused/Playing chip, the status message, and key hints.
+- Command palette (`Ctrl+P`) on both screens: search actions by name and run them; also switches the export mode and the theme at runtime.
 - Themes: every colour comes from a set of named tokens (ADR 0003). `-t/--theme <auto|dark|system>` picks a 24-bit dark theme in the style of OpenCode or the terminal's own colours; `auto` chooses by 24-bit colour support.
 - While playing, the preview title shows where the time goes: frames reaching the screen per second, frames decoded per second, encode time, draw time, and data per frame.
 

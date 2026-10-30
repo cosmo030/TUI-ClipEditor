@@ -12,9 +12,11 @@ use image::RgbImage;
 use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
 
 use super::browser::{Browser, Entry, EntryKind};
-use super::keys::{self, HomeAction};
+use super::keys::{self, HomeAction, PaletteKey};
+use super::palette::{EDITOR_COMMANDS, HOME_COMMANDS, Palette, PaletteAction};
 use super::playback::{PlaybackRequest, StreamedFrame};
-use super::session::{Leave, Session};
+use super::session::{Leave, Overlay, Session};
+use super::theme::Theme;
 use crate::clip::Clip;
 use crate::export::{ExportJob, ExportMode};
 use crate::ffmpeg::ExportOutcome;
@@ -153,6 +155,10 @@ pub(crate) struct App {
     next_generation: u64,
     /// The directory the browser came from, to reselect it after going up.
     previous_dir: Option<PathBuf>,
+    /// The colours in use (switchable from the command palette).
+    theme: Theme,
+    /// The open command palette, over either screen.
+    palette: Option<Palette>,
 }
 
 impl App {
@@ -177,7 +183,23 @@ impl App {
             preview_bounds: (0, 0),
             next_generation: 1,
             previous_dir: None,
+            theme: Theme::SYSTEM,
+            palette: None,
         }
+    }
+
+    /// Uses `theme` for drawing (the runtime picks it at startup).
+    pub(crate) const fn with_theme(mut self, theme: Theme) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    pub(crate) const fn theme(&self) -> &Theme {
+        &self.theme
+    }
+
+    pub(crate) const fn palette(&self) -> Option<&Palette> {
+        self.palette.as_ref()
     }
 
     pub(crate) const fn screen(&self) -> &Screen {
@@ -233,11 +255,78 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent, effects: &mut Vec<Effect>) {
+        if self.palette.is_some() {
+            self.on_palette_key(key, effects);
+            return;
+        }
+        if keys::is_ctrl_p(key) {
+            self.open_palette();
+            return;
+        }
         match &mut self.screen {
             Screen::Starting => {}
             Screen::Browser(_) => self.on_browser_key(key, effects),
             Screen::Editing(session) => {
                 if let Some(leave) = session.on_key(key, &mut self.status, effects) {
+                    self.leave_session(leave, effects);
+                }
+            }
+        }
+    }
+
+    /// Opens the palette for the current screen (not over a dialog).
+    fn open_palette(&mut self) {
+        let commands = match &self.screen {
+            Screen::Browser(_) => HOME_COMMANDS,
+            Screen::Editing(session) if matches!(session.overlay, Overlay::None) => EDITOR_COMMANDS,
+            _ => return,
+        };
+        self.palette = Some(Palette::new(commands));
+    }
+
+    fn on_palette_key(&mut self, key: KeyEvent, effects: &mut Vec<Effect>) {
+        let Some(palette) = &mut self.palette else {
+            return;
+        };
+        match keys::palette_key(key) {
+            Some(PaletteKey::Previous) => palette.select_previous(),
+            Some(PaletteKey::Next) => palette.select_next(),
+            Some(PaletteKey::Backspace) => palette.backspace(),
+            Some(PaletteKey::Type(character)) => palette.type_char(character),
+            Some(PaletteKey::Close) => self.palette = None,
+            Some(PaletteKey::Run) => {
+                let command = palette.selected_command();
+                self.palette = None;
+                if let Some(command) = command {
+                    self.run_palette_action(command.action, effects);
+                }
+            }
+            None => {}
+        }
+    }
+
+    fn run_palette_action(&mut self, action: PaletteAction, effects: &mut Vec<Effect>) {
+        match action {
+            PaletteAction::SwitchTheme => {
+                let (theme, name) = if self.theme == Theme::DARK {
+                    (Theme::SYSTEM, "system")
+                } else {
+                    (Theme::DARK, "dark")
+                };
+                self.theme = theme;
+                self.status = Some(Status::info(format!("Theme: {name}")));
+            }
+            PaletteAction::UpFolder => self.go_up_a_folder(effects),
+            PaletteAction::Quit => effects.push(Effect::Quit),
+            PaletteAction::ToggleExportMode => {
+                if let Screen::Editing(session) = &mut self.screen {
+                    session.toggle_export_mode(&mut self.status);
+                }
+            }
+            PaletteAction::Edit(edit) => {
+                if let Screen::Editing(session) = &mut self.screen
+                    && let Some(leave) = session.run_action(edit, &mut self.status)
+                {
                     self.leave_session(leave, effects);
                 }
             }
@@ -649,5 +738,96 @@ mod tests {
             result: Ok(vec![]),
         });
         assert_eq!(app.status(), None);
+    }
+
+    fn ctrl_p(app: &mut App) -> Vec<Effect> {
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL,
+        )))
+    }
+
+    fn run_command(app: &mut App, search: &str) -> Vec<Effect> {
+        ctrl_p(app);
+        type_text(app, search);
+        press(app, KeyCode::Enter)
+    }
+
+    #[test]
+    fn ctrl_p_opens_and_closes_the_palette_on_both_screens() {
+        let mut app = home(vec![]);
+        ctrl_p(&mut app);
+        assert!(app.palette().is_some());
+        ctrl_p(&mut app);
+        assert!(app.palette().is_none());
+
+        let mut editor = App::editing(PathBuf::from("a.mp4"), media(), None);
+        ctrl_p(&mut editor);
+        assert!(editor.palette().is_some());
+        press(&mut editor, KeyCode::Esc);
+        assert!(editor.palette().is_none());
+    }
+
+    #[test]
+    fn palette_does_not_open_over_a_dialog() {
+        let mut app = App::editing(PathBuf::from("a.mp4"), media(), None);
+        press(&mut app, KeyCode::Char('?'));
+        ctrl_p(&mut app);
+        assert!(app.palette().is_none());
+    }
+
+    #[test]
+    fn palette_keys_do_not_reach_the_editor() {
+        let mut app = App::editing(PathBuf::from("a.mp4"), media(), None);
+        ctrl_p(&mut app);
+        assert!(
+            press(&mut app, KeyCode::Char('q')).is_empty(),
+            "q is search text"
+        );
+        assert_eq!(app.palette().unwrap().query, "q");
+    }
+
+    #[test]
+    fn running_a_palette_command_does_what_its_key_does() {
+        let mut app = App::editing(PathBuf::from("a.mp4"), media(), None);
+        press(&mut app, KeyCode::Right);
+        run_command(&mut app, "set in");
+        assert!(app.palette().is_none(), "running closes the palette");
+        assert_eq!(
+            session(&app).editor.pending_in(),
+            Some(Timestamp::from_secs(1))
+        );
+        assert_eq!(run_command(&mut app, "quit"), [Effect::Quit]);
+    }
+
+    #[test]
+    fn palette_switches_the_theme_and_says_so() {
+        let mut app = home(vec![]).with_theme(Theme::DARK);
+        run_command(&mut app, "theme");
+        assert_eq!(*app.theme(), Theme::SYSTEM);
+        assert_eq!(app.status().unwrap().text, "Theme: system");
+        run_command(&mut app, "theme");
+        assert_eq!(*app.theme(), Theme::DARK);
+    }
+
+    #[test]
+    fn palette_switches_the_export_mode() {
+        let mut app = App::editing(PathBuf::from("a.mp4"), media(), None);
+        run_command(&mut app, "export mode");
+        assert_eq!(session(&app).export_mode, ExportMode::Precise);
+        assert_eq!(app.status().unwrap().text, "Export mode: Precise");
+    }
+
+    #[test]
+    fn palette_goes_up_a_folder_from_home() {
+        let (mut app, _) = App::browsing(PathBuf::from("videos").join("trip"), None);
+        app.update(Msg::DirectoryListed {
+            dir: PathBuf::from("videos").join("trip"),
+            result: Ok(vec![]),
+        });
+        assert_eq!(
+            run_command(&mut app, "up"),
+            [Effect::ListDirectory(PathBuf::from("videos"))]
+        );
     }
 }

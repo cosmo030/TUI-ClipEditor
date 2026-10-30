@@ -15,6 +15,7 @@ use super::app::{App, Screen, Status};
 use super::browser::{Browser, Entry, EntryKind};
 use super::keys::{EDITOR_HELP, EDITOR_HINTS, HOME_HINTS};
 use super::logo;
+use super::palette::{Command, Palette};
 use super::session::{ExportRun, Leave, Overlay, Session, count_clips};
 use super::terminal_image::{PreviewImage, TerminalImage};
 use super::theme::Theme;
@@ -91,7 +92,7 @@ pub(super) fn draw(
 ) -> Drawn {
     let area = frame.area();
     frame.render_widget(Block::new().style(theme.base()), area);
-    match app.screen() {
+    let mut drawn = match app.screen() {
         Screen::Starting => {
             frame.render_widget(Paragraph::new("Loading…").style(theme.muted()), area);
             Drawn::default()
@@ -101,7 +102,99 @@ pub(super) fn draw(
             Drawn::default()
         }
         Screen::Editing(session) => draw_editor(frame, area, session, app.status(), preview, theme),
+    };
+    if let Some(palette) = app.palette() {
+        draw_palette(frame, area, palette, theme);
+        // The palette leaves text over the image, so the next image erases.
+        drawn.image = None;
     }
+    drawn
+}
+
+/// Most commands shown at once in the palette.
+const PALETTE_ROWS: usize = 10;
+/// The palette's width.
+const PALETTE_WIDTH: u16 = 64;
+
+/// The command palette: a search line and the matching commands, each with
+/// its direct key on the right.
+fn draw_palette(frame: &mut Frame<'_>, area: Rect, palette: &Palette, theme: &Theme) {
+    let matches = palette.matches();
+    let rows = matches.len().clamp(1, PALETTE_ROWS);
+    let height = u16::try_from(rows).unwrap_or(1).saturating_add(4);
+    let popup = popup_area(area, PALETTE_WIDTH, height);
+    frame.render_widget(Clear, popup);
+    let block =
+        dialog(theme, " Commands ").title(Line::styled(" esc ", theme.muted()).right_aligned());
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+    let [input_area, _, list_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(inner);
+
+    let prompt = Span::styled("> ", Style::new().fg(theme.primary));
+    let input = if palette.query.is_empty() {
+        Line::from(vec![
+            prompt,
+            Span::styled("Search commands…", theme.muted()),
+        ])
+    } else {
+        Line::from(vec![prompt, Span::raw(palette.query.as_str())])
+    };
+    frame.render_widget(input, input_area);
+    let typed = u16::try_from(palette.query.chars().count()).unwrap_or(u16::MAX);
+    frame.set_cursor_position((
+        input_area
+            .x
+            .saturating_add(2)
+            .saturating_add(typed)
+            .min(input_area.right()),
+        input_area.y,
+    ));
+
+    if matches.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled("No matching commands.", theme.muted())),
+            list_area,
+        );
+        return;
+    }
+    let first = palette
+        .selected
+        .saturating_sub(rows - 1)
+        .min(matches.len().saturating_sub(rows));
+    let width = usize::from(list_area.width);
+    let lines: Vec<Line<'_>> = matches
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(rows)
+        .map(|(index, command)| palette_row(command, index == palette.selected, width, theme))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), list_area);
+}
+
+fn palette_row(command: &Command, is_selected: bool, width: usize, theme: &Theme) -> Line<'static> {
+    let label_width = command.label.chars().count() + 2;
+    let keys_width = command.keys.chars().count();
+    let gap = width.saturating_sub(label_width + keys_width).max(1);
+    let (bar, label_style) = if is_selected {
+        (
+            Span::styled("┃ ", Style::new().fg(theme.primary)),
+            Style::new().fg(theme.primary).add_modifier(Modifier::BOLD),
+        )
+    } else {
+        (Span::raw("  "), Style::new().fg(theme.text))
+    };
+    Line::from(vec![
+        bar,
+        Span::styled(command.label, label_style),
+        Span::raw(" ".repeat(gap)),
+        Span::styled(command.keys, theme.muted()),
+    ])
 }
 
 /// A dialog: a borderless box on the raised element background, with its
@@ -1094,6 +1187,29 @@ mod tests {
         assert_eq!(buffer[(x, y)].bg, Theme::DARK.background_element);
         let (_, hints_row) = find(&buffer, "e export");
         assert_eq!(y, hints_row, "chip and hints share the footer row");
+    }
+
+    #[test]
+    fn palette_lists_commands_with_their_keys_and_hides_the_image() {
+        let (mut app, image) = app_with_sixel_frame();
+        app.update(Msg::Key(KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL,
+        )));
+        for character in "export".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        let screen = render(&app);
+        assert!(screen.contains("Commands"));
+        assert!(screen.contains("> export"));
+        assert!(
+            screen.contains("┃ Export clips…"),
+            "best match selected:
+{screen}"
+        );
+        assert!(screen.contains("Switch export mode (fast copy / precise)"));
+        let (drawn, _) = draw_image(&app, &image, None);
+        assert_eq!(drawn.image, None, "the palette covers the image");
     }
 
     #[test]
