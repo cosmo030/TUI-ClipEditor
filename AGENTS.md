@@ -64,6 +64,7 @@ docs/adr/        Architecture decision records
 - Everything ffmpeg-specific lives in `src/ffmpeg/`; translate its output into domain types there.
 - UI state changes only through `tui::app::App::update(Msg) -> Vec<Effect>` ([ADR 0002](docs/adr/0002-ui-update-and-effects.md)); `tui::runtime` performs the effects. New UI features follow `tui/session.rs` as the reference.
 - Key bindings live in `tui/keys.rs`, together with the help text; update the README key table when they change.
+- Colours come only from `tui::theme::Theme` tokens ([ADR 0003](docs/adr/0003-design-system-and-themes.md)); widgets never name a colour directly.
 
 ## Environments and Deployment
 

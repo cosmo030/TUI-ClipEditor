@@ -2,9 +2,10 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::widgets::Widget;
 
+use super::theme::Theme;
 use crate::clip::Clip;
 use crate::timecode::Timestamp;
 
@@ -22,6 +23,7 @@ pub(super) struct Timeline<'a> {
     pub(super) pending_in: Option<Timestamp>,
     pub(super) clips: &'a [Clip],
     pub(super) selected: Option<usize>,
+    pub(super) theme: &'a Theme,
 }
 
 impl Timeline<'_> {
@@ -48,7 +50,9 @@ impl Timeline<'_> {
         if column == self.column(self.playhead, width) {
             return (
                 PLAYHEAD,
-                Style::new().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(self.theme.text)
+                    .add_modifier(Modifier::BOLD),
             );
         }
         if self
@@ -57,7 +61,9 @@ impl Timeline<'_> {
         {
             return (
                 IN_POINT,
-                Style::new().fg(Color::Magenta).add_modifier(Modifier::BOLD),
+                Style::new()
+                    .fg(self.theme.accent)
+                    .add_modifier(Modifier::BOLD),
             );
         }
         let (start, end) = self.column_range(column, width);
@@ -68,9 +74,9 @@ impl Timeline<'_> {
                 .and_then(|selected| self.clips.get(selected))
                 .is_some_and(overlaps);
             let color = if is_selected {
-                Color::Yellow
+                self.theme.warning
             } else {
-                Color::Green
+                self.theme.success
             };
             return (CLIP, Style::new().fg(color));
         }
@@ -81,10 +87,10 @@ impl Timeline<'_> {
                 (self.playhead, in_point)
             };
             if from < end && to > start {
-                return (PENDING, Style::new().fg(Color::Magenta));
+                return (PENDING, Style::new().fg(self.theme.accent));
             }
         }
-        (EMPTY, Style::new().fg(Color::DarkGray))
+        (EMPTY, Style::new().fg(self.theme.border_subtle))
     }
 }
 
@@ -128,6 +134,7 @@ mod tests {
             pending_in: None,
             clips,
             selected: None,
+            theme: &Theme::DARK,
         }
     }
 
@@ -163,8 +170,8 @@ mod tests {
             selected: Some(1),
             ..timeline(&clips)
         });
-        assert_eq!(buffer[(1, 0)].fg, Color::Green);
-        assert_eq!(buffer[(6, 0)].fg, Color::Yellow);
+        assert_eq!(buffer[(1, 0)].fg, Theme::DARK.success);
+        assert_eq!(buffer[(6, 0)].fg, Theme::DARK.warning);
     }
 
     #[test]

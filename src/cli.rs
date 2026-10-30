@@ -19,6 +19,8 @@ Options:
   -p, --preview <MODE>    How to draw the preview: auto, blocks, sixel, kitty, or iterm2
                           (default: auto, which falls back to blocks unless the terminal
                           confirms image support)
+  -t, --theme <THEME>     Colours: auto, dark, or system (default: auto, which uses dark
+                          when the terminal supports 24-bit colour)
   -h, --help              Print this help and exit
   -V, --version           Print the version and exit";
 
@@ -55,6 +57,33 @@ impl PreviewMode {
     }
 }
 
+/// Which colour theme to use.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThemeChoice {
+    /// `Dark` on terminals that support 24-bit colour, else `System`.
+    #[default]
+    Auto,
+    /// The built-in 24-bit dark theme.
+    Dark,
+    /// The terminal's own colours.
+    System,
+}
+
+impl ThemeChoice {
+    const NAMES: [(&'static str, Self); 3] = [
+        ("auto", Self::Auto),
+        ("dark", Self::Dark),
+        ("system", Self::System),
+    ];
+
+    fn parse(value: &str) -> Option<Self> {
+        Self::NAMES
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(value))
+            .map(|&(_, choice)| choice)
+    }
+}
+
 /// What the user asked the program to do.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Command {
@@ -75,6 +104,8 @@ pub struct RunOptions {
     pub output_dir: Option<PathBuf>,
     /// How to draw the preview.
     pub preview: PreviewMode,
+    /// Which colour theme to use.
+    pub theme: ThemeChoice,
 }
 
 /// An invalid command line.
@@ -88,6 +119,8 @@ pub enum CliError {
     UnexpectedArgument(String),
     /// `--preview` was given a value it does not accept.
     InvalidPreviewMode(String),
+    /// `--theme` was given a value it does not accept.
+    InvalidTheme(String),
 }
 
 impl fmt::Display for CliError {
@@ -105,6 +138,9 @@ impl fmt::Display for CliError {
                 f,
                 "invalid preview mode: {value} (expected auto, blocks, sixel, kitty, or iterm2)"
             ),
+            Self::InvalidTheme(value) => {
+                write!(f, "invalid theme: {value} (expected auto, dark, or system)")
+            }
         }
     }
 }
@@ -145,6 +181,12 @@ where
                     first_error.get_or_insert(error);
                 }
             },
+            "-t" | "--theme" => match parse_theme(args.next()) {
+                Ok(theme) => options.theme = theme,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                }
+            },
             option if option.starts_with('-') => {
                 first_error.get_or_insert_with(|| CliError::UnknownOption(option.to_owned()));
             }
@@ -167,9 +209,43 @@ fn parse_preview(value: Option<OsString>) -> Result<PreviewMode, CliError> {
     PreviewMode::parse(&text).ok_or_else(|| CliError::InvalidPreviewMode(text.into_owned()))
 }
 
+fn parse_theme(value: Option<OsString>) -> Result<ThemeChoice, CliError> {
+    let value = value.ok_or(CliError::MissingValue("--theme"))?;
+    let text = value.to_string_lossy();
+    ThemeChoice::parse(&text).ok_or_else(|| CliError::InvalidTheme(text.into_owned()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn theme_defaults_to_auto_and_accepts_every_choice() {
+        assert_eq!(RunOptions::default().theme, ThemeChoice::Auto);
+        for (name, choice) in ThemeChoice::NAMES {
+            let Ok(Command::Run(options)) = parse(&["--theme", name]) else {
+                panic!("--theme {name} was rejected");
+            };
+            assert_eq!(options.theme, choice);
+        }
+        let Ok(Command::Run(options)) = parse(&["-t", "SYSTEM"]) else {
+            panic!("-t SYSTEM was rejected");
+        };
+        assert_eq!(options.theme, ThemeChoice::System);
+    }
+
+    #[test]
+    fn theme_rejects_unknown_or_missing_values() {
+        assert_eq!(
+            parse(&["--theme", "neon"]),
+            Err(CliError::InvalidTheme("neon".to_owned()))
+        );
+        assert_eq!(parse(&["-t"]), Err(CliError::MissingValue("--theme")));
+        assert_eq!(
+            CliError::InvalidTheme("neon".to_owned()).to_string(),
+            "invalid theme: neon (expected auto, dark, or system)"
+        );
+    }
 
     fn parse(args: &[&str]) -> Result<Command, CliError> {
         parse_args(args.iter().map(OsString::from))

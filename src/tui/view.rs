@@ -1,8 +1,11 @@
 //! Drawing the app state with ratatui. Reads state only; never changes it.
+//!
+//! Every colour comes from the [`Theme`] (see ADR 0003); no widget here
+//! names a colour directly.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Color, Modifier, Style, Stylize};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
 
@@ -11,12 +14,12 @@ use super::browser::{Browser, EntryKind};
 use super::keys::{BROWSER_HINTS, EDITOR_HELP, EDITOR_HINTS};
 use super::session::{ExportRun, Leave, Overlay, Session, count_clips};
 use super::terminal_image::{PreviewImage, TerminalImage};
+use super::theme::Theme;
 use super::timeline::Timeline;
 use crate::clip::Clip;
 
 /// Width of the clip list, including its border.
 const CLIP_LIST_WIDTH: u16 = 44;
-const HIGHLIGHT: Style = Style::new().add_modifier(Modifier::REVERSED);
 
 /// What the runtime has for the preview box.
 #[derive(Default)]
@@ -77,22 +80,50 @@ pub(super) struct Drawn {
 }
 
 /// Draws the whole screen.
-pub(super) fn draw(frame: &mut Frame<'_>, app: &App, preview: &PreviewDisplay<'_>) -> Drawn {
+pub(super) fn draw(
+    frame: &mut Frame<'_>,
+    app: &App,
+    preview: &PreviewDisplay<'_>,
+    theme: &Theme,
+) -> Drawn {
     let area = frame.area();
+    frame.render_widget(Block::new().style(theme.base()), area);
     match app.screen() {
         Screen::Starting => {
-            frame.render_widget(Paragraph::new("Loading…"), area);
+            frame.render_widget(Paragraph::new("Loading…").style(theme.muted()), area);
             Drawn::default()
         }
         Screen::Browser(browser) => {
-            draw_browser(frame, area, browser, app.status());
+            draw_browser(frame, area, browser, app.status(), theme);
             Drawn::default()
         }
-        Screen::Editing(session) => draw_editor(frame, area, session, app.status(), preview),
+        Screen::Editing(session) => draw_editor(frame, area, session, app.status(), preview, theme),
     }
 }
 
-fn draw_browser(frame: &mut Frame<'_>, area: Rect, browser: &Browser, status: Option<&Status>) {
+/// A panel: a bordered block on the panel background.
+fn panel<'a>(theme: &Theme, title: impl Into<Line<'a>>) -> Block<'a> {
+    Block::bordered()
+        .border_style(theme.border())
+        .style(Style::new().bg(theme.background_panel).fg(theme.text))
+        .title(title)
+}
+
+/// A dialog: like a panel, on the raised element background.
+fn dialog<'a>(theme: &Theme, title: impl Into<Line<'a>>) -> Block<'a> {
+    Block::bordered()
+        .border_style(Style::new().fg(theme.border_active))
+        .style(Style::new().bg(theme.background_element).fg(theme.text))
+        .title(title)
+}
+
+fn draw_browser(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    browser: &Browser,
+    status: Option<&Status>,
+    theme: &Theme,
+) {
     let [list_area, status_area, hints_area] = Layout::vertical([
         Constraint::Min(3),
         Constraint::Length(1),
@@ -100,22 +131,34 @@ fn draw_browser(frame: &mut Frame<'_>, area: Rect, browser: &Browser, status: Op
     ])
     .areas(area);
 
-    let block = Block::bordered().title(format!(" Open a video · {} ", browser.dir.display()));
+    let block = panel(theme, format!(" Open a video · {} ", browser.dir.display()));
     if browser.entries.is_empty() {
-        let empty = Paragraph::new("No folders or video files here.".dim()).block(block);
+        let empty = Paragraph::new(Span::styled(
+            "No folders or video files here.",
+            theme.muted(),
+        ))
+        .block(block);
         frame.render_widget(empty, list_area);
     } else {
         let items = browser.entries.iter().map(|entry| match entry.kind {
-            EntryKind::Parent => ListItem::new(".. (up a folder)".dim()),
-            EntryKind::Directory => ListItem::new(format!("▸ {}/", entry.name).blue()),
+            EntryKind::Parent => ListItem::new(Span::styled(".. (up a folder)", theme.muted())),
+            EntryKind::Directory => ListItem::new(Span::styled(
+                format!("▸ {}/", entry.name),
+                Style::new().fg(theme.primary),
+            )),
             EntryKind::Video => ListItem::new(format!("  {}", entry.name)),
         });
-        let list = List::new(items).block(block).highlight_style(HIGHLIGHT);
+        let list = List::new(items)
+            .block(block)
+            .highlight_style(theme.selected());
         let mut state = ListState::default().with_selected(Some(browser.selected));
         frame.render_stateful_widget(list, list_area, &mut state);
     }
-    frame.render_widget(status_line(None, status), status_area);
-    frame.render_widget(Paragraph::new(BROWSER_HINTS.dim()), hints_area);
+    frame.render_widget(status_line(None, status, theme), status_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(BROWSER_HINTS, theme.muted())),
+        hints_area,
+    );
 }
 
 fn draw_editor(
@@ -124,6 +167,7 @@ fn draw_editor(
     session: &Session,
     status: Option<&Status>,
     preview: &PreviewDisplay<'_>,
+    theme: &Theme,
 ) -> Drawn {
     let [
         title_area,
@@ -143,19 +187,22 @@ fn draw_editor(
         Layout::horizontal([Constraint::Min(20), Constraint::Length(CLIP_LIST_WIDTH)])
             .areas(main_area);
 
-    frame.render_widget(title_line(session), title_area);
-    let (image_area, image) = draw_preview(frame, preview_area, session, preview);
-    draw_clip_list(frame, clips_area, session);
-    draw_timeline(frame, timeline_area, session);
+    frame.render_widget(title_line(session, theme), title_area);
+    let (image_area, image) = draw_preview(frame, preview_area, session, preview, theme);
+    draw_clip_list(frame, clips_area, session, theme);
+    draw_timeline(frame, timeline_area, session, theme);
     let playback = if session.editor.is_playing() {
         "▶ Playing"
     } else {
         "⏸ Paused"
     };
-    frame.render_widget(status_line(Some(playback), status), status_area);
-    frame.render_widget(Paragraph::new(EDITOR_HINTS.dim()), hints_area);
+    frame.render_widget(status_line(Some(playback), status, theme), status_area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(EDITOR_HINTS, theme.muted())),
+        hints_area,
+    );
 
-    draw_overlay(frame, area, session);
+    draw_overlay(frame, area, session, theme);
     Drawn {
         preview_area: Some(image_area),
         // A dialog drawn over the image leaves text in its cells, so the
@@ -164,7 +211,7 @@ fn draw_editor(
     }
 }
 
-fn title_line(session: &Session) -> Line<'static> {
+fn title_line(session: &Session, theme: &Theme) -> Line<'static> {
     let name = session.path.file_name().map_or_else(
         || session.path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -176,15 +223,14 @@ fn title_line(session: &Session) -> Line<'static> {
         " · no audio"
     };
     Line::from(vec![
-        " clipedit ".bold().reversed(),
-        format!(
+        Span::styled(" clipedit ", theme.chip()),
+        Span::raw(format!(
             " {name} · {}×{} · {:.2} fps · {}{audio}",
             video.width,
             video.height,
             video.frame_rate.frames_per_second(),
             session.media.duration
-        )
-        .into(),
+        )),
     ])
 }
 
@@ -198,12 +244,13 @@ fn draw_preview(
     area: Rect,
     session: &Session,
     preview: &PreviewDisplay<'_>,
+    theme: &Theme,
 ) -> (Rect, Option<Rect>) {
     let rate = preview
         .stats
         .map(|stats| format!(" · {}", stats.summary()))
         .unwrap_or_default();
-    let block = Block::bordered().title(format!(" Preview · {}{rate} ", preview.label));
+    let block = panel(theme, format!(" Preview · {}{rate} ", preview.label));
     let inner = block.inner(area);
     frame.render_widget(block, area);
     match (preview.image, &session.frame) {
@@ -217,7 +264,10 @@ fn draw_preview(
             (inner, Some(rect))
         }
         _ => {
-            frame.render_widget(Paragraph::new("Loading preview…".dim()), inner);
+            frame.render_widget(
+                Paragraph::new(Span::styled("Loading preview…", theme.muted())),
+                inner,
+            );
             (inner, None)
         }
     }
@@ -235,15 +285,15 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     )
 }
 
-fn draw_clip_list(frame: &mut Frame<'_>, area: Rect, session: &Session) {
+fn draw_clip_list(frame: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) {
     let clips = session.editor.clips();
-    let block = Block::bordered().title(format!(" Clips ({}) ", clips.len()));
+    let block = panel(theme, format!(" Clips ({}) ", clips.len()));
     if clips.is_empty() {
         let help = Paragraph::new(vec![
-            Line::from("No clips yet.".dim()),
+            Line::styled("No clips yet.", theme.muted()),
             Line::from(""),
-            Line::from("Press i at the start of a".dim()),
-            Line::from("part and o at its end.".dim()),
+            Line::styled("Press i at the start of a", theme.muted()),
+            Line::styled("part and o at its end.", theme.muted()),
         ])
         .block(block);
         frame.render_widget(help, area);
@@ -253,7 +303,9 @@ fn draw_clip_list(frame: &mut Frame<'_>, area: Rect, session: &Session) {
         .iter()
         .enumerate()
         .map(|(index, clip)| ListItem::new(clip_row(index, *clip)));
-    let list = List::new(items).block(block).highlight_style(HIGHLIGHT);
+    let list = List::new(items)
+        .block(block)
+        .highlight_style(theme.selected());
     let mut state = ListState::default().with_selected(session.editor.selected_index());
     frame.render_stateful_widget(list, area, &mut state);
 }
@@ -268,13 +320,20 @@ fn clip_row(index: usize, clip: Clip) -> String {
     )
 }
 
-fn draw_timeline(frame: &mut Frame<'_>, area: Rect, session: &Session) {
+fn draw_timeline(frame: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) {
     let editor = &session.editor;
-    let mut block =
-        Block::bordered().title(format!(" {} / {} ", editor.playhead(), editor.duration()));
+    let mut block = panel(
+        theme,
+        format!(" {} / {} ", editor.playhead(), editor.duration()),
+    );
     if let Some(in_point) = editor.pending_in() {
-        block = block
-            .title_bottom(Line::from(format!(" in point {in_point} ").magenta()).right_aligned());
+        block = block.title_bottom(
+            Line::styled(
+                format!(" in point {in_point} "),
+                Style::new().fg(theme.accent),
+            )
+            .right_aligned(),
+        );
     }
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -285,80 +344,97 @@ fn draw_timeline(frame: &mut Frame<'_>, area: Rect, session: &Session) {
             pending_in: editor.pending_in(),
             clips: editor.clips(),
             selected: editor.selected_index(),
+            theme,
         },
         inner,
     );
 }
 
-fn status_line<'a>(prefix: Option<&'a str>, status: Option<&'a Status>) -> Paragraph<'a> {
+fn status_line<'a>(
+    prefix: Option<&'a str>,
+    status: Option<&'a Status>,
+    theme: &Theme,
+) -> Paragraph<'a> {
     let mut spans = Vec::new();
     if let Some(prefix) = prefix {
-        spans.push(Span::from(format!(" {prefix}  ")).bold());
+        spans.push(Span::styled(format!(" {prefix}  "), bold(theme)));
     }
     if let Some(status) = status {
         let color = if status.is_error {
-            Color::Red
+            theme.error
         } else {
-            Color::Cyan
+            theme.info
         };
         spans.push(Span::styled(status.text.as_str(), Style::new().fg(color)));
     }
     Paragraph::new(Line::from(spans))
 }
 
-fn draw_overlay(frame: &mut Frame<'_>, area: Rect, session: &Session) {
+fn draw_overlay(frame: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) {
     match &session.overlay {
         Overlay::None => {}
-        Overlay::Help => draw_help(frame, area),
-        Overlay::ExportDialog => draw_export_dialog(frame, area, session),
-        Overlay::Exporting(run) => draw_export_progress(frame, area, run),
-        Overlay::ConfirmLeave(leave) => draw_confirm_leave(frame, area, leave),
+        Overlay::Help => draw_help(frame, area, theme),
+        Overlay::ExportDialog => draw_export_dialog(frame, area, session, theme),
+        Overlay::Exporting(run) => draw_export_progress(frame, area, run, theme),
+        Overlay::ConfirmLeave(leave) => draw_confirm_leave(frame, area, leave, theme),
     }
 }
 
-fn draw_help(frame: &mut Frame<'_>, area: Rect) {
+/// Emphasised text, such as key names.
+fn bold(theme: &Theme) -> Style {
+    Style::new().fg(theme.text).add_modifier(Modifier::BOLD)
+}
+
+fn draw_help(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let lines: Vec<Line<'_>> = EDITOR_HELP
         .iter()
-        .map(|(keys, action)| Line::from(vec![format!(" {keys:<12}").bold(), Span::from(*action)]))
+        .map(|(keys, action)| {
+            Line::from(vec![
+                Span::styled(format!(" {keys:<12}"), bold(theme)),
+                Span::raw(*action),
+            ])
+        })
         .collect();
     let height = u16::try_from(lines.len())
         .unwrap_or(u16::MAX)
         .saturating_add(2);
     let popup = popup_area(area, 52, height);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered()
-        .title(" Keys ")
-        .title_bottom(Line::from(" any key closes ").right_aligned());
+    let block = dialog(theme, " Keys ")
+        .title_bottom(Line::styled(" any key closes ", theme.muted()).right_aligned());
     frame.render_widget(Paragraph::new(lines).block(block), popup);
 }
 
-fn draw_export_dialog(frame: &mut Frame<'_>, area: Rect, session: &Session) {
+fn draw_export_dialog(frame: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) {
     let mode = session.export_mode;
     let lines = vec![
         Line::from(vec![
-            " Mode:  ".into(),
-            format!("‹ {mode} ›").bold().yellow(),
-            "  (Tab switches)".dim(),
+            Span::raw(" Mode:  "),
+            Span::styled(
+                format!("‹ {mode} ›"),
+                Style::new().fg(theme.primary).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  (Tab switches)", theme.muted()),
         ]),
-        Line::from(format!("        {}", mode.description()).dim()),
+        Line::styled(format!("        {}", mode.description()), theme.muted()),
         Line::from(""),
         Line::from(format!(" To:    {}", session.output_dir.display())),
         Line::from(""),
-        Line::from(" Enter export · Esc back".dim()),
+        Line::styled(" Enter export · Esc back", theme.muted()),
     ];
     let popup = popup_area(area, 78, 8);
     frame.render_widget(Clear, popup);
     let title = format!(" Export {} ", count_clips(session.editor.clips().len()));
-    let dialog = Paragraph::new(lines)
-        .block(Block::bordered().title(title))
+    let content = Paragraph::new(lines)
+        .block(dialog(theme, title))
         .wrap(Wrap { trim: false });
-    frame.render_widget(dialog, popup);
+    frame.render_widget(content, popup);
 }
 
-fn draw_export_progress(frame: &mut Frame<'_>, area: Rect, run: &ExportRun) {
+fn draw_export_progress(frame: &mut Frame<'_>, area: Rect, run: &ExportRun, theme: &Theme) {
     let popup = popup_area(area, 70, 7);
     frame.render_widget(Clear, popup);
-    let block = Block::bordered().title(" Exporting ");
+    let block = dialog(theme, " Exporting ");
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
     let [heading, file, _, gauge_area, hint] =
@@ -377,13 +453,16 @@ fn draw_export_progress(frame: &mut Frame<'_>, area: Rect, run: &ExportRun) {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned());
         frame.render_widget(
-            Paragraph::new(format!(" {}", name.unwrap_or_default()).dim()),
+            Paragraph::new(Span::styled(
+                format!(" {}", name.unwrap_or_default()),
+                theme.muted(),
+            )),
             file,
         );
     }
     let ratio = run.ratio();
     let gauge = Gauge::default()
-        .gauge_style(Style::new().fg(Color::Green))
+        .gauge_style(Style::new().fg(theme.success).bg(theme.background_panel))
         .ratio(ratio)
         .label(format!("{:.0}%", ratio * 100.0));
     frame.render_widget(gauge, gauge_area);
@@ -392,10 +471,10 @@ fn draw_export_progress(frame: &mut Frame<'_>, area: Rect, run: &ExportRun) {
     } else {
         " Esc cancel"
     };
-    frame.render_widget(Paragraph::new(hint_text.dim()), hint);
+    frame.render_widget(Paragraph::new(Span::styled(hint_text, theme.muted())), hint);
 }
 
-fn draw_confirm_leave(frame: &mut Frame<'_>, area: Rect, leave: &Leave) {
+fn draw_confirm_leave(frame: &mut Frame<'_>, area: Rect, leave: &Leave, theme: &Theme) {
     let action = match leave {
         Leave::Quit => "Quit",
         Leave::Browse(_) => "Open another video",
@@ -404,16 +483,16 @@ fn draw_confirm_leave(frame: &mut Frame<'_>, area: Rect, leave: &Leave) {
         Line::from(" Some clips have not been exported and will be lost."),
         Line::from(""),
         Line::from(vec![
-            format!(" {action} anyway? ").into(),
-            "y".bold(),
-            " / ".into(),
-            "n".bold(),
+            Span::raw(format!(" {action} anyway? ")),
+            Span::styled("y", bold(theme)),
+            Span::raw(" / "),
+            Span::styled("n", bold(theme)),
         ]),
     ];
     let popup = popup_area(area, 58, 5);
     frame.render_widget(Clear, popup);
     frame.render_widget(
-        Paragraph::new(lines).block(Block::bordered().title(" Unsaved clips ")),
+        Paragraph::new(lines).block(dialog(theme, " Unsaved clips ")),
         popup,
     );
 }
@@ -477,7 +556,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal
             .draw(|frame| {
-                draw(frame, app, display);
+                draw(frame, app, display, &Theme::DARK);
             })
             .unwrap();
         let buffer = terminal.backend().buffer();
@@ -631,7 +710,7 @@ mod tests {
         };
         let mut drawn = Drawn::default();
         terminal
-            .draw(|frame| drawn = draw(frame, app, &display))
+            .draw(|frame| drawn = draw(frame, app, &display, &Theme::DARK))
             .unwrap();
         let symbol = drawn
             .image
@@ -677,6 +756,51 @@ mod tests {
         let area = Rect::new(2, 1, 100, 40);
         assert_eq!(centered(area, 60, 20), Rect::new(22, 11, 60, 20));
         assert_eq!(centered(area, 200, 50), area, "never larger than the area");
+    }
+
+    /// Draws the editor with `theme` and returns the buffer.
+    fn render_themed(theme: &Theme) -> ratatui::buffer::Buffer {
+        let app = App::editing(PathBuf::from("trip.mp4"), media(), None);
+        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        terminal
+            .draw(|frame| {
+                draw(frame, &app, &PreviewDisplay::default(), theme);
+            })
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn find(buffer: &ratatui::buffer::Buffer, text: &str) -> (u16, u16) {
+        let width = buffer.area.width;
+        for y in 0..buffer.area.height {
+            let row: String = (0..width).map(|x| buffer[(x, y)].symbol()).collect();
+            if let Some(x) = row.find(text) {
+                let column = row[..x].chars().count();
+                return (u16::try_from(column).unwrap(), y);
+            }
+        }
+        panic!("{text:?} is not on screen");
+    }
+
+    #[test]
+    fn dark_theme_paints_backgrounds_and_mutes_hints() {
+        let buffer = render_themed(&Theme::DARK);
+        let (x, y) = find(&buffer, "No clips yet.");
+        assert_eq!(buffer[(x, y)].fg, Theme::DARK.text_muted);
+        assert_eq!(buffer[(x, y)].bg, Theme::DARK.background_panel);
+        let (x, y) = find(&buffer, "Space play");
+        assert_eq!(buffer[(x, y)].fg, Theme::DARK.text_muted);
+        assert_eq!(buffer[(x, y)].bg, Theme::DARK.background);
+        let (x, y) = find(&buffer, "clipedit");
+        assert_eq!(buffer[(x, y)].bg, Theme::DARK.primary, "title chip");
+    }
+
+    #[test]
+    fn system_theme_keeps_the_terminal_background() {
+        let buffer = render_themed(&Theme::SYSTEM);
+        let (x, y) = find(&buffer, "Space play");
+        assert_eq!(buffer[(x, y)].bg, ratatui::style::Color::Reset);
+        assert_eq!(buffer[(x, y)].fg, Theme::SYSTEM.text_muted);
     }
 
     #[test]

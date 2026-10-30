@@ -17,6 +17,7 @@ use ratatui::crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdat
 use ratatui::layout::Rect;
 use ratatui_image::picker::Picker;
 
+use super::Settings;
 use super::app::{
     App, DecodedFrame, Effect, ExportEvent, ExportRequest, FrameRequest, Msg, Screen,
 };
@@ -27,9 +28,9 @@ use super::encoder::{
 use super::playback::{PlaybackCommand, spawn_playback_worker};
 use super::preview::{create_picker, protocol_label};
 use super::terminal_image::{Quality, TerminalImage};
+use super::theme::{TerminalInfo, Theme};
 use super::view::{PlaybackStats, PreviewDisplay};
 use super::{Start, TuiError, view};
-use crate::cli::PreviewMode;
 use crate::export::{ExportJob, plan_exports};
 use crate::ffmpeg::Ffmpeg;
 
@@ -88,16 +89,12 @@ impl PlaybackMeter {
 ///
 /// Returns [`TuiError::Terminal`] if the terminal cannot be set up, drawn
 /// to, read from, or restored.
-pub fn run(
-    start: Start,
-    output_dir: Option<PathBuf>,
-    preview: PreviewMode,
-    ffmpeg: Ffmpeg,
-) -> Result<(), TuiError> {
+pub fn run(start: Start, settings: Settings, ffmpeg: Ffmpeg) -> Result<(), TuiError> {
+    let theme = Theme::resolve(settings.theme, &TerminalInfo::from_env());
     let mut terminal = ratatui::try_init()?;
     // Queries the terminal, so it must run before the input reader starts.
-    let picker = create_picker(preview);
-    let result = Runtime::new(start, output_dir, ffmpeg, picker).run(&mut terminal);
+    let picker = create_picker(settings.preview);
+    let result = Runtime::new(start, settings.output_dir, ffmpeg, picker, theme).run(&mut terminal);
     let restored = ratatui::try_restore();
     result?;
     restored.map_err(TuiError::from)
@@ -108,6 +105,7 @@ struct Runtime {
     pending: VecDeque<Effect>,
     ffmpeg: Ffmpeg,
     picker: Picker,
+    theme: Theme,
     events: Sender<LoopEvent>,
     inbox: Receiver<LoopEvent>,
     frames: Sender<FrameRequest>,
@@ -126,7 +124,13 @@ struct Runtime {
 }
 
 impl Runtime {
-    fn new(start: Start, output_dir: Option<PathBuf>, ffmpeg: Ffmpeg, picker: Picker) -> Self {
+    fn new(
+        start: Start,
+        output_dir: Option<PathBuf>,
+        ffmpeg: Ffmpeg,
+        picker: Picker,
+        theme: Theme,
+    ) -> Self {
         let (events, inbox) = mpsc::channel();
         let frames = spawn_frame_worker(ffmpeg.clone(), events.clone());
         let playback = {
@@ -150,6 +154,7 @@ impl Runtime {
             pending: effects.into(),
             ffmpeg,
             picker,
+            theme,
             events,
             inbox,
             frames,
@@ -247,7 +252,7 @@ impl Runtime {
         // painted. Terminals without support ignore both sequences.
         execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
         let result = terminal
-            .draw(|frame| drawn = view::draw(frame, &self.app, &display))
+            .draw(|frame| drawn = view::draw(frame, &self.app, &display, &self.theme))
             .map(|_| ());
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         result?;
