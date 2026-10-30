@@ -14,32 +14,40 @@ use image::RgbImage;
 use ratatui::layout::Size;
 use ratatui_image::picker::Picker;
 
-use super::terminal_image::{TerminalImage, encode};
+use super::terminal_image::{Quality, TerminalImage, encode};
 
 /// Identifies a decoded frame: (session generation, frame serial).
 pub(super) type FrameKey = (u64, u64);
 
-/// Encode `image` to fit `cells`.
-#[derive(Debug)]
-pub(super) struct EncodeRequest {
+/// What to encode a frame as: which frame, for how many cells, how detailed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct EncodeTarget {
     pub(super) key: FrameKey,
     pub(super) cells: Size,
+    pub(super) quality: Quality,
+}
+
+/// Encode `image` as `target` describes.
+#[derive(Debug)]
+pub(super) struct EncodeRequest {
+    pub(super) target: EncodeTarget,
     pub(super) image: RgbImage,
 }
 
 /// An encoded frame, ready to draw.
 pub(super) struct Encoded {
-    pub(super) key: FrameKey,
-    pub(super) cells: Size,
+    pub(super) target: EncodeTarget,
     pub(super) image: Result<TerminalImage, String>,
+    /// How long encoding took.
+    pub(super) took: Duration,
 }
 
 impl std::fmt::Debug for Encoded {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Encoded")
-            .field("key", &self.key)
-            .field("cells", &self.cells)
+            .field("target", &self.target)
             .field("ok", &self.image.is_ok())
+            .field("took", &self.took)
             .finish()
     }
 }
@@ -55,10 +63,13 @@ pub(super) fn spawn_encoder(
         while let Ok(first) = inbox.recv() {
             // Frames queued while the last one was encoding are already old.
             let request = inbox.try_iter().last().unwrap_or(first);
+            let target = request.target;
+            let started = Instant::now();
+            let image = encode(&picker, request.image, target.cells, target.quality);
             let encoded = Encoded {
-                key: request.key,
-                cells: request.cells,
-                image: encode(&picker, request.image, request.cells),
+                target,
+                image,
+                took: started.elapsed(),
             };
             if !deliver(encoded) {
                 return;
@@ -99,6 +110,29 @@ impl FrameRateMeter {
     }
 }
 
+/// A smoothed average of recent samples, so the on-screen numbers do not
+/// jump on every frame.
+#[derive(Debug, Default, Clone, Copy)]
+pub(super) struct RollingAverage {
+    value: Option<f64>,
+}
+
+impl RollingAverage {
+    /// Weight of the newest sample.
+    const WEIGHT: f64 = 0.2;
+
+    pub(super) fn record(&mut self, sample: f64) {
+        self.value = Some(match self.value {
+            Some(value) => value + (sample - value) * Self::WEIGHT,
+            None => sample,
+        });
+    }
+
+    pub(super) const fn value(self) -> Option<f64> {
+        self.value
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,16 +154,30 @@ mod tests {
         let picker = Picker::halfblocks();
         let (sender, results) = mpsc::channel();
         let encoder = spawn_encoder(picker, move |encoded| sender.send(encoded).is_ok());
+        let target = EncodeTarget {
+            key: (1, 1),
+            cells: Size::new(20, 10),
+            quality: Quality::Playback,
+        };
         encoder
             .send(EncodeRequest {
-                key: (1, 1),
-                cells: Size::new(20, 10),
+                target,
                 image: RgbImage::new(100, 100),
             })
             .unwrap();
         let encoded = results.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert_eq!(encoded.key, (1, 1));
+        assert_eq!(encoded.target, target);
         let size = encoded.image.unwrap().size();
         assert!(size.width <= 20 && size.height <= 10, "got {size:?}");
+    }
+
+    #[test]
+    fn rolling_average_starts_at_the_first_sample_and_smooths() {
+        let mut average = RollingAverage::default();
+        assert_eq!(average.value(), None);
+        average.record(10.0);
+        assert_eq!(average.value(), Some(10.0));
+        average.record(20.0);
+        assert_eq!(average.value(), Some(12.0));
     }
 }

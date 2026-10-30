@@ -12,7 +12,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 - `-o/--output-dir` option, `--help`, and `--version`.
 - Quality gates: rustfmt, clippy, tests on Ubuntu and Windows, cargo-deny, and gitleaks in CI.
 - `-p/--preview <auto|blocks|sixel|kitty|iterm2>` option; the preview title shows the mode in use.
-- Smooth playback: while playing, the preview streams frames from one ffmpeg process (up to 30 fps) instead of seeking for every frame, and the title shows the preview frame rate. Previews are encoded off the UI thread, centred in the preview box, and up to 1920×1080 pixels.
+- Smooth playback: while playing, the preview streams frames from one ffmpeg process (up to 30 fps) instead of seeking for every frame. Previews are encoded off the UI thread, centred in the preview box, and up to 1920×1080 pixels.
+- Faster sixel playback on large, grainy videos: frames shown while playing use 64 colours without dithering (about half the data; the paused frame is redrawn at full quality), and the playback stream decodes on the GPU where available (`-hwaccel auto`) with a faster scaler.
+- While playing, the preview title shows where the time goes: frames reaching the screen per second, frames decoded per second, encode time, draw time, and data per frame.
 
 ### Fixed
 

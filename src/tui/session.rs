@@ -58,6 +58,9 @@ pub(crate) struct PreviewFrame {
     pub(crate) at: Timestamp,
     pub(crate) size: (u32, u32),
     pub(crate) image: RgbImage,
+    /// Whether it came from the playback stream (it can then be drawn with
+    /// less detail while playing) rather than an exact single-frame decode.
+    pub(crate) from_stream: bool,
 }
 
 /// Progress of a running export.
@@ -366,7 +369,7 @@ impl Session {
         }
         self.frame_in_flight = false;
         match frame.image {
-            Ok(image) => self.show_frame(frame.at, frame.size, image),
+            Ok(image) => self.show_frame(frame.at, frame.size, image, false),
             Err(error) => {
                 self.failed_frame = Some((frame.at, frame.size));
                 *status = Some(Status::error(format!("Preview failed: {error}")));
@@ -394,7 +397,7 @@ impl Session {
                     }
                     stream.has_delivered = true;
                 }
-                self.show_frame(frame.at, frame.size, image);
+                self.show_frame(frame.at, frame.size, image, true);
             }
             Err(error) => {
                 self.stream = None;
@@ -404,7 +407,7 @@ impl Session {
         }
     }
 
-    fn show_frame(&mut self, at: Timestamp, size: (u32, u32), image: RgbImage) {
+    fn show_frame(&mut self, at: Timestamp, size: (u32, u32), image: RgbImage, from_stream: bool) {
         let serial = self
             .frame
             .as_ref()
@@ -415,6 +418,7 @@ impl Session {
             at,
             size,
             image,
+            from_stream,
         });
     }
 

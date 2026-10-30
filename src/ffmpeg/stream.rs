@@ -180,12 +180,21 @@ fn stream_args(
     rate: FrameRate,
 ) -> Vec<OsString> {
     let position = start.to_ffmpeg_seconds();
-    let filters = format!("fps={},scale={width}:{height}", rate.to_ffmpeg_rate());
+    // Playback favours speed: the fast bilinear scaler, and the GPU decoder
+    // where one is available. Software decoding of large, high-bitrate video
+    // keeps many CPU cores busy, which slows encoding frames for the terminal.
+    // `-hwaccel auto` falls back to software decoding by itself.
+    let filters = format!(
+        "fps={},scale={width}:{height}:flags=fast_bilinear",
+        rate.to_ffmpeg_rate()
+    );
     let mut args = os_args(&[
         "-hide_banner",
         "-nostdin",
         "-v",
         "error",
+        "-hwaccel",
+        "auto",
         "-ss",
         &position,
         "-i",
@@ -219,7 +228,16 @@ mod tests {
         };
         assert_eq!(value_after("-ss"), "2.500000");
         assert_eq!(value_after("-i"), "in.mp4");
-        assert_eq!(value_after("-vf"), "fps=30/1,scale=640:268");
+        assert_eq!(
+            value_after("-vf"),
+            "fps=30/1,scale=640:268:flags=fast_bilinear"
+        );
+        assert_eq!(value_after("-hwaccel"), "auto");
+        let position = |flag: &str| args.iter().position(|arg| arg == flag).unwrap();
+        assert!(
+            position("-hwaccel") < position("-i"),
+            "-hwaccel is an input option"
+        );
         assert_eq!(value_after("-pix_fmt"), "rgb24");
         assert!(
             !args.contains(&"-frames:v".to_owned()),

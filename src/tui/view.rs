@@ -25,10 +25,46 @@ pub(super) struct PreviewDisplay<'a> {
     pub(super) image: Option<&'a TerminalImage>,
     /// The image mode, for the title (for example `blocks` or `sixel`).
     pub(super) label: &'a str,
-    /// Preview frames shown per second, while playing.
-    pub(super) fps: Option<usize>,
+    /// Where playback time goes, while playing.
+    pub(super) stats: Option<PlaybackStats>,
     /// Where the last frame left an image uncovered ([`Drawn::image`]).
     pub(super) previous_image: Option<Rect>,
+}
+
+/// Playback measurements shown in the preview title.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+pub(super) struct PlaybackStats {
+    /// New frames written to the terminal per second.
+    pub(super) shown_fps: usize,
+    /// Frames arriving from the decoder per second.
+    pub(super) decoded_fps: usize,
+    /// Average time to encode a frame for the terminal.
+    pub(super) encode_ms: Option<f64>,
+    /// Average time to write a frame to the terminal (includes waiting for
+    /// the terminal to take earlier output).
+    pub(super) draw_ms: Option<f64>,
+    /// Average image data per frame, where known.
+    pub(super) frame_kb: Option<f64>,
+}
+
+impl PlaybackStats {
+    /// `24 fps · decode 30/s · encode 16 ms · draw 22 ms · 180 KB`.
+    fn summary(&self) -> String {
+        let mut parts = vec![
+            format!("{} fps", self.shown_fps),
+            format!("decode {}/s", self.decoded_fps),
+        ];
+        if let Some(ms) = self.encode_ms {
+            parts.push(format!("encode {ms:.0} ms"));
+        }
+        if let Some(ms) = self.draw_ms {
+            parts.push(format!("draw {ms:.0} ms"));
+        }
+        if let Some(kb) = self.frame_kb {
+            parts.push(format!("{kb:.0} KB"));
+        }
+        parts.join(" · ")
+    }
 }
 
 /// Where the preview ended up on screen.
@@ -164,8 +200,8 @@ fn draw_preview(
     preview: &PreviewDisplay<'_>,
 ) -> (Rect, Option<Rect>) {
     let rate = preview
-        .fps
-        .map(|fps| format!(" · {fps} fps"))
+        .stats
+        .map(|stats| format!(" · {}", stats.summary()))
         .unwrap_or_default();
     let block = Block::bordered().title(format!(" Preview · {}{rate} ", preview.label));
     let inner = block.inner(area);
@@ -406,7 +442,7 @@ mod tests {
     use crate::timecode::Timestamp;
     use crate::tui::app::{DecodedFrame, Msg};
     use crate::tui::browser::Entry;
-    use crate::tui::terminal_image::encode;
+    use crate::tui::terminal_image::{Quality, encode};
     use image::RgbImage;
     use ratatui::layout::Size;
     use ratatui_image::picker::{Picker, ProtocolType};
@@ -434,7 +470,11 @@ mod tests {
     }
 
     fn render_with(app: &App, display: &PreviewDisplay<'_>) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+        render_sized(app, display, 100)
+    }
+
+    fn render_sized(app: &App, display: &PreviewDisplay<'_>, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 24)).unwrap();
         terminal
             .draw(|frame| {
                 draw(frame, app, display);
@@ -526,17 +566,36 @@ mod tests {
     }
 
     #[test]
-    fn preview_title_shows_the_frame_rate_while_playing() {
+    fn preview_title_shows_where_playback_time_goes() {
         let app = App::editing(PathBuf::from("trip.mp4"), media(), None);
-        let screen = render_with(
+        let screen = render_sized(
             &app,
             &PreviewDisplay {
                 label: "sixel",
-                fps: Some(24),
+                stats: Some(PlaybackStats {
+                    shown_fps: 24,
+                    decoded_fps: 30,
+                    encode_ms: Some(15.6),
+                    draw_ms: Some(22.2),
+                    frame_kb: Some(180.4),
+                }),
                 ..PreviewDisplay::default()
             },
+            160,
         );
-        assert!(screen.contains("Preview · sixel · 24 fps"));
+        assert!(screen.contains(
+            "Preview · sixel · 24 fps · decode 30/s · encode 16 ms · draw 22 ms · 180 KB"
+        ));
+    }
+
+    #[test]
+    fn stats_leave_out_measurements_not_taken_yet() {
+        let stats = PlaybackStats {
+            shown_fps: 0,
+            decoded_fps: 12,
+            ..PlaybackStats::default()
+        };
+        assert_eq!(stats.summary(), "0 fps · decode 12/s");
     }
 
     /// An editor with a decoded frame and that frame encoded as sixel.
@@ -550,7 +609,13 @@ mod tests {
         }));
         let mut picker = Picker::halfblocks();
         picker.set_protocol_type(ProtocolType::Sixel);
-        let image = encode(&picker, RgbImage::new(40, 40), Size::new(20, 10)).unwrap();
+        let image = encode(
+            &picker,
+            RgbImage::new(40, 40),
+            Size::new(20, 10),
+            Quality::Full,
+        )
+        .unwrap();
         (app, image)
     }
 

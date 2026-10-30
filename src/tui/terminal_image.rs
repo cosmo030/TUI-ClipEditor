@@ -45,9 +45,47 @@ impl TerminalImage {
             Self::Sixel(sixel) => sixel.size,
         }
     }
+
+    /// Bytes sent to the terminal to draw it, where known (sixel only).
+    pub(super) fn byte_len(&self) -> Option<usize> {
+        match self {
+            Self::Library(_) => None,
+            Self::Sixel(sixel) => Some(sixel.data.len()),
+        }
+    }
 }
 
-/// Encodes `image` to fit in `cells`, in the picker's format.
+/// How much detail to spend on an image.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum Quality {
+    /// Full detail, for a still frame.
+    #[default]
+    Full,
+    /// Lighter frames while playing. Grainy footage makes full-detail sixel
+    /// frames around 330 KB (about 10 MB/s at 30 fps), more than Windows
+    /// Terminal takes in; fewer colours without dithering roughly halves
+    /// that. A paused frame is redrawn at full detail.
+    Playback,
+}
+
+/// Colours in a playback frame (a full frame uses up to 256).
+const PLAYBACK_COLORS: u16 = 64;
+
+impl Quality {
+    fn sixel_options(self) -> EncodeOptions {
+        match self {
+            Self::Full => EncodeOptions::default(),
+            Self::Playback => EncodeOptions {
+                max_colors: PLAYBACK_COLORS,
+                diffusion: 0.0,
+                ..EncodeOptions::default()
+            },
+        }
+    }
+}
+
+/// Encodes `image` to fit in `cells`, in the picker's format. `quality`
+/// applies to sixel; other formats have no comparable setting.
 ///
 /// # Errors
 ///
@@ -56,13 +94,14 @@ pub(super) fn encode(
     picker: &Picker,
     image: RgbImage,
     cells: Size,
+    quality: Quality,
 ) -> Result<TerminalImage, String> {
     // Inside tmux, sixel must be wrapped in passthrough sequences, which the
     // library handles.
     if picker.protocol_type() == ProtocolType::Sixel && !picker.tmux_detected() {
         let size = cells_covered(image.width(), image.height(), picker.font_size());
         if size.width <= cells.width && size.height <= cells.height {
-            return encode_sixel(&image, size).map(TerminalImage::Sixel);
+            return encode_sixel(&image, size, &quality.sixel_options()).map(TerminalImage::Sixel);
         }
     }
     picker
@@ -71,11 +110,15 @@ pub(super) fn encode(
         .map_err(|error| error.to_string())
 }
 
-fn encode_sixel(image: &RgbImage, size: Size) -> Result<SixelImage, String> {
+fn encode_sixel(
+    image: &RgbImage,
+    size: Size,
+    options: &EncodeOptions,
+) -> Result<SixelImage, String> {
     let rgba = DynamicImage::ImageRgb8(image.clone()).to_rgba8();
     let width = usize::try_from(image.width()).map_err(|error| error.to_string())?;
     let height = usize::try_from(image.height()).map_err(|error| error.to_string())?;
-    let data = sixel_encode(rgba.as_raw(), width, height, &EncodeOptions::default())
+    let data = sixel_encode(rgba.as_raw(), width, height, options)
         .map_err(|error| format!("sixel encoding error: {error}"))?;
     Ok(SixelImage { data, size })
 }
@@ -159,7 +202,7 @@ mod tests {
     fn sixel_images_are_encoded_without_an_erase_prefix() {
         let font = sixel_picker().font_size();
         let image = RgbImage::new(u32::from(font.width) * 4, u32::from(font.height) * 3);
-        let encoded = encode(&sixel_picker(), image, Size::new(10, 10)).unwrap();
+        let encoded = encode(&sixel_picker(), image, Size::new(10, 10), Quality::Full).unwrap();
         let TerminalImage::Sixel(sixel) = &encoded else {
             panic!("expected our own sixel encoding");
         };
@@ -173,7 +216,7 @@ mod tests {
     #[test]
     fn images_too_big_for_the_cells_use_the_library_resize() {
         let image = RgbImage::new(1_000, 1_000);
-        let encoded = encode(&sixel_picker(), image, Size::new(5, 5)).unwrap();
+        let encoded = encode(&sixel_picker(), image, Size::new(5, 5), Quality::Full).unwrap();
         assert!(matches!(encoded, TerminalImage::Library(_)));
         let size = encoded.size();
         assert!(size.width <= 5 && size.height <= 5);
@@ -182,7 +225,13 @@ mod tests {
     #[test]
     fn other_formats_use_the_library() {
         let image = RgbImage::new(20, 20);
-        let encoded = encode(&Picker::halfblocks(), image, Size::new(10, 10)).unwrap();
+        let encoded = encode(
+            &Picker::halfblocks(),
+            image,
+            Size::new(10, 10),
+            Quality::Full,
+        )
+        .unwrap();
         assert!(matches!(encoded, TerminalImage::Library(_)));
     }
 
@@ -225,6 +274,56 @@ mod tests {
         });
         let buffer = rendered(&sixel, false, Rect::new(0, 0, 10, 10));
         assert_eq!(buffer[(0, 0)].symbol(), " ");
+    }
+
+    /// A deterministic, noisy image (like grainy video), which is what makes
+    /// full-detail sixel frames large.
+    fn noisy_image(width: u32, height: u32) -> RgbImage {
+        let mut state: u32 = 12_345;
+        RgbImage::from_fn(width, height, |x, y| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let noise = (state >> 24) as u8 / 4;
+            image::Rgb([
+                (x * 255 / width) as u8 / 2 + noise,
+                (y * 255 / height) as u8 / 2 + noise,
+                128 + noise / 2,
+            ])
+        })
+    }
+
+    #[test]
+    fn playback_quality_sends_much_less_sixel_data() {
+        let font = sixel_picker().font_size();
+        let (width, height) = (u32::from(font.width) * 30, u32::from(font.height) * 10);
+        let cells = Size::new(30, 10);
+        let full = encode(
+            &sixel_picker(),
+            noisy_image(width, height),
+            cells,
+            Quality::Full,
+        )
+        .unwrap();
+        let light = encode(
+            &sixel_picker(),
+            noisy_image(width, height),
+            cells,
+            Quality::Playback,
+        )
+        .unwrap();
+        let (full, light) = (full.byte_len().unwrap(), light.byte_len().unwrap());
+        assert!(light * 10 < full * 8, "playback {light} B vs full {full} B");
+    }
+
+    #[test]
+    fn only_sixel_reports_its_size_in_bytes() {
+        let blocks = encode(
+            &Picker::halfblocks(),
+            RgbImage::new(20, 20),
+            Size::new(10, 10),
+            Quality::Full,
+        )
+        .unwrap();
+        assert_eq!(blocks.byte_len(), None);
     }
 
     #[test]
