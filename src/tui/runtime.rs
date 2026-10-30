@@ -105,7 +105,6 @@ struct Runtime {
     pending: VecDeque<Effect>,
     ffmpeg: Ffmpeg,
     picker: Picker,
-    theme: Theme,
     events: Sender<LoopEvent>,
     inbox: Receiver<LoopEvent>,
     frames: Sender<FrameRequest>,
@@ -150,11 +149,10 @@ impl Runtime {
             Start::Edit { path, media } => (App::editing(path, media, output_dir), Vec::new()),
         };
         Self {
-            app,
+            app: app.with_theme(theme),
             pending: effects.into(),
             ffmpeg,
             picker,
-            theme,
             events,
             inbox,
             frames,
@@ -256,7 +254,7 @@ impl Runtime {
         // painted. Terminals without support ignore both sequences.
         execute!(terminal.backend_mut(), BeginSynchronizedUpdate)?;
         let result = terminal
-            .draw(|frame| drawn = view::draw(frame, &self.app, &display, &self.theme))
+            .draw(|frame| drawn = view::draw(frame, &self.app, &display, self.app.theme()))
             .map(|_| ());
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         result?;

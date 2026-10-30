@@ -26,6 +26,7 @@ pub(super) const EDITOR_HELP: &[(&str, &str)] = &[
     ("e", "export clips"),
     ("b", "browse for another video"),
     ("?", "show / hide this help"),
+    ("Ctrl+P", "command palette"),
     ("q  Ctrl+C", "quit"),
 ];
 
@@ -36,7 +37,7 @@ pub(super) const EDITOR_HINTS: &[(&str, &str)] = &[
     ("i", "in"),
     ("o", "out"),
     ("e", "export"),
-    ("?", "keys"),
+    ("ctrl+p", "commands"),
     ("q", "quit"),
 ];
 
@@ -46,6 +47,7 @@ pub(super) const HOME_HINTS: &[(&str, &str)] = &[
     ("tab", "into folder"),
     ("↑↓", "select"),
     ("backspace", "up a folder"),
+    ("ctrl+p", "commands"),
     ("esc", "quit"),
 ];
 
@@ -93,6 +95,44 @@ pub(super) enum HomeAction {
     ClearOrQuit,
     Quit,
     Type(char),
+}
+
+/// What a key does in the command palette.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PaletteKey {
+    Previous,
+    Next,
+    Run,
+    Close,
+    Backspace,
+    Type(char),
+}
+
+/// `Ctrl+P` opens (and closes) the command palette.
+pub(super) fn is_ctrl_p(key: KeyEvent) -> bool {
+    key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('p')
+}
+
+pub(super) fn palette_key(key: KeyEvent) -> Option<PaletteKey> {
+    if is_ctrl_c(key) || is_ctrl_p(key) {
+        return Some(PaletteKey::Close);
+    }
+    let action = match key.code {
+        KeyCode::Up => PaletteKey::Previous,
+        KeyCode::Down => PaletteKey::Next,
+        KeyCode::Enter => PaletteKey::Run,
+        KeyCode::Esc => PaletteKey::Close,
+        KeyCode::Backspace => PaletteKey::Backspace,
+        KeyCode::Char(character)
+            if !key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+        {
+            PaletteKey::Type(character)
+        }
+        _ => return None,
+    };
+    Some(action)
 }
 
 fn is_ctrl_c(key: KeyEvent) -> bool {
@@ -251,6 +291,21 @@ mod tests {
         );
         let ctrl_x = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL);
         assert_eq!(home_action(ctrl_x), None, "control keys are not typed");
+    }
+
+    #[test]
+    fn palette_keys_type_select_run_and_close() {
+        let ctrl_p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL);
+        assert!(is_ctrl_p(ctrl_p));
+        assert!(!is_ctrl_p(key(KeyCode::Char('p'))));
+        assert_eq!(palette_key(ctrl_p), Some(PaletteKey::Close));
+        assert_eq!(palette_key(key(KeyCode::Esc)), Some(PaletteKey::Close));
+        assert_eq!(
+            palette_key(key(KeyCode::Char('q'))),
+            Some(PaletteKey::Type('q'))
+        );
+        assert_eq!(palette_key(key(KeyCode::Enter)), Some(PaletteKey::Run));
+        assert_eq!(palette_key(key(KeyCode::Down)), Some(PaletteKey::Next));
     }
 
     #[test]

@@ -3,7 +3,7 @@
 //! - `app` — UI state and the pure `update(message) -> effects` function.
 //! - `session`, `browser` — state of the editing screen and the home screen's
 //!   folder search (`fuzzy` ranks matches; `logo` is the home screen wordmark).
-//! - `keys` — key bindings.
+//! - `keys` — key bindings; `palette` — the `ctrl+p` command palette.
 //! - `view`, `timeline` — drawing; `theme` — the colours they use;
 //!   `preview` — choosing the image protocol;
 //!   `terminal_image` — encoding and drawing preview images.
@@ -18,6 +18,7 @@ mod encoder;
 mod fuzzy;
 mod keys;
 mod logo;
+mod palette;
 mod playback;
 mod preview;
 mod runtime;

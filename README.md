@@ -61,6 +61,7 @@ Without a video, `clipedit` opens its home screen: type to search the current fo
 | `↑` `↓` | Select |
 | `Backspace` | Delete a character; with an empty search, go up a folder |
 | `Esc` | Clear the search; with an empty search, quit |
+| `Ctrl+P` | Command palette |
 | `Ctrl+C` | Quit |
 
 ### Marking clips
@@ -83,7 +84,12 @@ Move to where a clip should start and press `i`, then move to where it should en
 | `e` | Export clips |
 | `b` | Browse for another video |
 | `?` | Show all keys |
+| `Ctrl+P` | Command palette: search and run any action, switch export mode or theme |
 | `q` / `Ctrl+C` | Quit (asks first if clips were not exported) |
+
+### Command palette
+
+Press `Ctrl+P` on either screen to search every action by name, as in OpenCode: type a few letters (`exp` finds “Export clips…”), pick with `↑` `↓`, and press `Enter`. Each command shows its direct key on the right. The palette can also switch the export mode and the theme (dark / system). `Esc` closes it.
 
 ### Exporting
 

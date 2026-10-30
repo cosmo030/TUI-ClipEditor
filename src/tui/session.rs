@@ -191,6 +191,16 @@ impl Session {
 
     fn on_editor_key(&mut self, key: KeyEvent, status: &mut Option<Status>) -> Option<Leave> {
         let action = keys::edit_action(key)?;
+        self.run_action(action, status)
+    }
+
+    /// Does what an editor key (or the command palette) asks. Returns where
+    /// to go if the user leaves the editor.
+    pub(crate) fn run_action(
+        &mut self,
+        action: EditAction,
+        status: &mut Option<Status>,
+    ) -> Option<Leave> {
         *status = None;
         match action {
             EditAction::Quit => return self.leave(Leave::Quit),
@@ -269,6 +279,12 @@ impl Session {
             }
             Err(error) => *status = Some(Status::error(error.to_string())),
         }
+    }
+
+    /// Switches between fast copy and precise export, outside the dialog.
+    pub(crate) fn toggle_export_mode(&mut self, status: &mut Option<Status>) {
+        self.export_mode = self.export_mode.toggled();
+        *status = Some(Status::info(format!("Export mode: {}", self.export_mode)));
     }
 
     fn open_export_dialog(&mut self, status: &mut Option<Status>) {

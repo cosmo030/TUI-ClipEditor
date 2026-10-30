@@ -34,7 +34,7 @@ flowchart LR
 | `export` | Export modes and job planning with collision-free file names (existence check passed in). | No |
 | `ffmpeg` | The only code that knows ffmpeg: command lines, ffprobe JSON, `-progress` output, process timeouts and tree kills, output-file reservation. | Yes |
 | `cli` | Argument parsing. | No |
-| `tui::app`, `session`, `browser`, `fuzzy`, `keys` | UI state (editor; home-screen folder search with ranked matching) and the `update(Msg) -> Vec<Effect>` function ([ADR 0002](adr/0002-ui-update-and-effects.md)). | No (except `browser::read_entries`, called by the runtime) |
+| `tui::app`, `session`, `browser`, `fuzzy`, `keys`, `palette` | UI state (editor; home-screen folder search with ranked matching) and the `update(Msg) -> Vec<Effect>` function ([ADR 0002](adr/0002-ui-update-and-effects.md)). | No (except `browser::read_entries`, called by the runtime) |
 | `tui::view`, `timeline`, `theme` | Drawing the state with ratatui, in colours from the theme tokens ([ADR 0003](adr/0003-design-system-and-themes.md)). | No (renders to a buffer) |
 | `tui::playback`, `encoder`, `preview`, `terminal_image` | Playback stream worker (paced to the clock), terminal-image encoder worker, image-format choice, sixel encoding and the image widget. | Yes (worker threads) |
 | `tui::runtime` | Terminal setup and restore, the event loop, background threads, performing effects. | Yes |
