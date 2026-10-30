@@ -12,7 +12,7 @@ use image::RgbImage;
 use ratatui::crossterm::event::{KeyEvent, KeyEventKind};
 
 use super::browser::{Browser, Entry, EntryKind};
-use super::keys::{self, BrowseAction};
+use super::keys::{self, HomeAction};
 use super::playback::{PlaybackRequest, StreamedFrame};
 use super::session::{Leave, Session};
 use crate::clip::Clip;
@@ -80,6 +80,7 @@ pub(crate) enum ExportEvent {
 pub(crate) enum Effect {
     Quit,
     ListDirectory(PathBuf),
+    /// Open a video (or, for a folder, show it on the home screen).
     Open(PathBuf),
     RequestFrame(FrameRequest),
     /// Feed the preview from a playback stream (replacing any running one).
@@ -247,34 +248,80 @@ impl App {
         let Screen::Browser(browser) = &mut self.screen else {
             return;
         };
-        match keys::browse_action(key) {
-            Some(BrowseAction::Previous) => browser.select_previous(),
-            Some(BrowseAction::Next) => browser.select_next(),
-            Some(BrowseAction::Quit) => effects.push(Effect::Quit),
-            Some(BrowseAction::Parent) => {
-                if let Some(parent) = browser.dir.parent() {
-                    self.previous_dir = Some(browser.dir.clone());
-                    effects.push(Effect::ListDirectory(parent.to_path_buf()));
+        let Some(action) = keys::home_action(key) else {
+            return;
+        };
+        self.status = None;
+        match action {
+            HomeAction::Previous => browser.select_previous(),
+            HomeAction::Next => browser.select_next(),
+            HomeAction::Type(character) => browser.type_char(character),
+            HomeAction::Quit => effects.push(Effect::Quit),
+            HomeAction::ClearOrQuit => {
+                if !browser.clear_query() {
+                    effects.push(Effect::Quit);
                 }
             }
-            Some(BrowseAction::Open) => {
-                let Some(entry) = browser.selected_entry() else {
-                    return;
-                };
-                match entry.kind {
-                    EntryKind::Video => {
-                        self.status = Some(Status::info(format!("Opening {}…", entry.name)));
-                        effects.push(Effect::Open(entry.path.clone()));
-                    }
-                    EntryKind::Parent => {
-                        self.previous_dir = Some(browser.dir.clone());
-                        effects.push(Effect::ListDirectory(entry.path.clone()));
-                    }
-                    EntryKind::Directory => effects.push(Effect::ListDirectory(entry.path.clone())),
+            HomeAction::Backspace => {
+                if !browser.backspace() {
+                    self.go_up_a_folder(effects);
                 }
             }
-            None => {}
+            HomeAction::EnterFolder => {
+                if let Some(entry) = browser.selected_entry()
+                    && entry.kind != EntryKind::Video
+                {
+                    let target = entry.path.clone();
+                    self.list_folder(target, effects);
+                }
+            }
+            HomeAction::Open => self.open_from_home(effects),
         }
+    }
+
+    /// Enter on the home screen: a typed path wins, then the selected match.
+    fn open_from_home(&mut self, effects: &mut Vec<Effect>) {
+        let Screen::Browser(browser) = &self.screen else {
+            return;
+        };
+        if let Some(path) = browser.typed_path() {
+            self.status = Some(Status::info(format!("Opening {}…", path.display())));
+            effects.push(Effect::Open(path));
+            return;
+        }
+        let Some(entry) = browser.selected_entry() else {
+            return;
+        };
+        match entry.kind {
+            EntryKind::Video => {
+                self.status = Some(Status::info(format!("Opening {}…", entry.name)));
+                effects.push(Effect::Open(entry.path.clone()));
+            }
+            EntryKind::Parent | EntryKind::Directory => {
+                let target = entry.path.clone();
+                self.list_folder(target, effects);
+            }
+        }
+    }
+
+    fn go_up_a_folder(&mut self, effects: &mut Vec<Effect>) {
+        let Screen::Browser(browser) = &self.screen else {
+            return;
+        };
+        if let Some(parent) = browser.dir.parent() {
+            let parent = parent.to_path_buf();
+            self.list_folder(parent, effects);
+        }
+    }
+
+    /// Lists `target`, remembering the current folder so going up reselects it.
+    fn list_folder(&mut self, target: PathBuf, effects: &mut Vec<Effect>) {
+        if let Screen::Browser(browser) = &self.screen
+            && browser.dir.starts_with(&target)
+        {
+            self.previous_dir = Some(browser.dir.clone());
+        }
+        effects.push(Effect::ListDirectory(target));
     }
 
     fn leave_session(&mut self, leave: Leave, effects: &mut Vec<Effect>) {
@@ -326,6 +373,10 @@ impl App {
                 .position(|entry| entry.path == previous)
         {
             browser.selected = index;
+        }
+        // "Opening <folder>…" has done its job once the folder is shown.
+        if self.status.as_ref().is_some_and(|status| !status.is_error) {
+            self.status = None;
         }
         self.screen = Screen::Browser(browser);
     }
@@ -511,5 +562,92 @@ mod tests {
             press(&mut app, KeyCode::Char('b')),
             [Effect::ListDirectory(PathBuf::from("videos"))]
         );
+    }
+
+    fn home(entries: Vec<Entry>) -> App {
+        let (mut app, _) = App::browsing(PathBuf::from("videos"), None);
+        app.update(Msg::DirectoryListed {
+            dir: PathBuf::from("videos"),
+            result: Ok(entries),
+        });
+        app
+    }
+
+    fn type_text(app: &mut App, text: &str) {
+        for character in text.chars() {
+            press(app, KeyCode::Char(character));
+        }
+    }
+
+    #[test]
+    fn typing_on_home_then_enter_opens_the_best_match() {
+        let mut app = home(vec![
+            entry("..", EntryKind::Parent),
+            entry("about bob.mkv", EntryKind::Video),
+            entry("bodycam.mp4", EntryKind::Video),
+        ]);
+        type_text(&mut app, "bod");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::Open(PathBuf::from("videos").join("bodycam.mp4"))]
+        );
+    }
+
+    #[test]
+    fn a_typed_path_is_opened_directly() {
+        let mut app = home(vec![entry("trips", EntryKind::Directory)]);
+        type_text(&mut app, "trips/day1.mp4");
+        assert_eq!(
+            press(&mut app, KeyCode::Enter),
+            [Effect::Open(PathBuf::from("videos").join("trips/day1.mp4"))]
+        );
+    }
+
+    #[test]
+    fn escape_clears_the_search_before_quitting() {
+        let mut app = home(vec![entry("a.mp4", EntryKind::Video)]);
+        type_text(&mut app, "zz");
+        assert!(press(&mut app, KeyCode::Esc).is_empty(), "first Esc clears");
+        assert_eq!(press(&mut app, KeyCode::Esc), [Effect::Quit]);
+    }
+
+    #[test]
+    fn letters_are_search_text_not_shortcuts() {
+        let mut app = home(vec![entry("quarry.mp4", EntryKind::Video)]);
+        assert!(
+            press(&mut app, KeyCode::Char('q')).is_empty(),
+            "q does not quit"
+        );
+        let Screen::Browser(browser) = app.screen() else {
+            panic!("expected the home screen");
+        };
+        assert_eq!(browser.query, "q");
+    }
+
+    #[test]
+    fn tab_goes_into_the_selected_folder_but_not_into_videos() {
+        let mut app = home(vec![
+            entry("trips", EntryKind::Directory),
+            entry("a.mp4", EntryKind::Video),
+        ]);
+        assert_eq!(
+            press(&mut app, KeyCode::Tab),
+            [Effect::ListDirectory(PathBuf::from("videos").join("trips"))]
+        );
+        press(&mut app, KeyCode::Down);
+        assert!(press(&mut app, KeyCode::Tab).is_empty());
+    }
+
+    #[test]
+    fn showing_a_folder_clears_the_opening_message() {
+        let mut app = home(vec![entry("trips", EntryKind::Directory)]);
+        type_text(&mut app, "trips/");
+        press(&mut app, KeyCode::Enter);
+        assert!(app.status().is_some());
+        app.update(Msg::DirectoryListed {
+            dir: PathBuf::from("videos").join("trips"),
+            result: Ok(vec![]),
+        });
+        assert_eq!(app.status(), None);
     }
 }

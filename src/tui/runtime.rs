@@ -212,6 +212,10 @@ impl Runtime {
                     let result = read_entries(&dir).map_err(|error| error.to_string());
                     self.dispatch(Msg::DirectoryListed { dir, result });
                 }
+                // A typed path may name a folder; show it instead of probing.
+                Effect::Open(path) if path.is_dir() => {
+                    self.pending.push_front(Effect::ListDirectory(path));
+                }
                 Effect::Open(path) => self.open_in_background(path),
                 // The workers only stop when these senders are dropped, so
                 // sending cannot fail while the runtime exists.

@@ -41,13 +41,27 @@ A terminal video clip editor: open a video, scrub through it with a picture prev
 ```text
 clipedit [OPTIONS] [VIDEO]
 
-  VIDEO                   Video to open. Without it (or with a folder), a file browser opens.
+  VIDEO                   Video to open. Without it (or with a folder), the home screen opens.
   -o, --output-dir <DIR>  Write exported clips to DIR (default: the video's folder)
   -p, --preview <MODE>    How to draw the preview: auto (default), blocks, sixel, kitty, or iterm2
   -t, --theme <THEME>     Colours: auto (default), dark, or system
   -h, --help              Print help
   -V, --version           Print the version
 ```
+
+### Home screen
+
+Without a video, `clipedit` opens its home screen: type to search the current folder's subfolders and videos, then press `Enter`. You can also type a path (anything containing `/`, or `\` on Windows) and press `Enter` to open it directly.
+
+| Key | Action |
+|---|---|
+| typing | Search this folder |
+| `Enter` | Open the selected video or folder, or the typed path |
+| `Tab` / `→` | Go into the selected folder |
+| `↑` `↓` | Select |
+| `Backspace` | Delete a character; with an empty search, go up a folder |
+| `Esc` | Clear the search; with an empty search, quit |
+| `Ctrl+C` | Quit |
 
 ### Marking clips
 

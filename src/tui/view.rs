@@ -5,13 +5,16 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Gauge, List, ListItem, ListState, Padding, Paragraph, Wrap,
+};
 
 use super::app::{App, Screen, Status};
-use super::browser::{Browser, EntryKind};
-use super::keys::{BROWSER_HINTS, EDITOR_HELP, EDITOR_HINTS};
+use super::browser::{Browser, Entry, EntryKind};
+use super::keys::{EDITOR_HELP, EDITOR_HINTS, HOME_HINTS};
+use super::logo;
 use super::session::{ExportRun, Leave, Overlay, Session, count_clips};
 use super::terminal_image::{PreviewImage, TerminalImage};
 use super::theme::Theme;
@@ -117,6 +120,13 @@ fn dialog<'a>(theme: &Theme, title: impl Into<Line<'a>>) -> Block<'a> {
         .title(title)
 }
 
+/// Most search results shown under the input at once.
+const HOME_RESULT_ROWS: usize = 8;
+/// Widest the home screen's centre column gets.
+const HOME_WIDTH: u16 = 72;
+
+/// The home screen, after OpenCode's: the logo, a search input with an
+/// accent bar, matching folders and videos, key hints, and a footer.
 fn draw_browser(
     frame: &mut Frame<'_>,
     area: Rect,
@@ -124,41 +134,189 @@ fn draw_browser(
     status: Option<&Status>,
     theme: &Theme,
 ) {
-    let [list_area, status_area, hints_area] = Layout::vertical([
-        Constraint::Min(3),
+    let [body, footer] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+    let matches = browser.matches();
+    let result_rows = matches.len().clamp(1, HOME_RESULT_ROWS);
+    let result_height = u16::try_from(result_rows).unwrap_or(1);
+    let column = popup_area(
+        body,
+        HOME_WIDTH
+            .min(body.width.saturating_sub(4))
+            .max(logo::width()),
+        logo::HEIGHT + 1 + 4 + result_height + 1 + 1 + 1,
+    );
+    let [
+        logo_area,
+        _,
+        input_area,
+        results_area,
+        _,
+        hints_area,
+        status_area,
+    ] = Layout::vertical([
+        Constraint::Length(logo::HEIGHT),
+        Constraint::Length(1),
+        Constraint::Length(4),
+        Constraint::Length(result_height),
+        Constraint::Length(1),
         Constraint::Length(1),
         Constraint::Length(1),
     ])
-    .areas(area);
+    .areas(column);
 
-    let block = panel(theme, format!(" Open a video · {} ", browser.dir.display()));
-    if browser.entries.is_empty() {
-        let empty = Paragraph::new(Span::styled(
-            "No folders or video files here.",
-            theme.muted(),
-        ))
-        .block(block);
-        frame.render_widget(empty, list_area);
-    } else {
-        let items = browser.entries.iter().map(|entry| match entry.kind {
-            EntryKind::Parent => ListItem::new(Span::styled(".. (up a folder)", theme.muted())),
-            EntryKind::Directory => ListItem::new(Span::styled(
-                format!("▸ {}/", entry.name),
-                Style::new().fg(theme.primary),
-            )),
-            EntryKind::Video => ListItem::new(format!("  {}", entry.name)),
-        });
-        let list = List::new(items)
-            .block(block)
-            .highlight_style(theme.selected());
-        let mut state = ListState::default().with_selected(Some(browser.selected));
-        frame.render_stateful_widget(list, list_area, &mut state);
-    }
+    frame.render_widget(Paragraph::new(logo::lines(theme)).centered(), logo_area);
+    draw_home_input(frame, input_area, browser, &matches, theme);
+    draw_home_results(frame, results_area, browser, &matches, theme);
+    frame.render_widget(hint_line(HOME_HINTS, theme), hints_area);
     frame.render_widget(status_line(None, status, theme), status_area);
+    draw_footer(frame, footer, &browser.dir.display().to_string(), theme);
+}
+
+/// The search input: a raised box with an accent bar on the left, like
+/// OpenCode's prompt.
+fn draw_home_input(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    browser: &Browser,
+    matches: &[&Entry],
+    theme: &Theme,
+) {
+    let block = Block::new()
+        .borders(Borders::LEFT)
+        .border_type(BorderType::Thick)
+        .border_style(Style::new().fg(theme.primary))
+        .style(Style::new().bg(theme.background_element).fg(theme.text))
+        .padding(Padding::new(1, 1, 1, 0));
+    let inner = block.inner(area);
+    let first_line = if browser.query.is_empty() {
+        Line::styled("Search this folder, or type a path…", theme.muted())
+    } else {
+        Line::from(browser.query.as_str())
+    };
+    let folders = matches
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Directory)
+        .count();
+    let videos = matches
+        .iter()
+        .filter(|entry| entry.kind == EntryKind::Video)
+        .count();
+    let second_line = Line::from(vec![
+        Span::styled(
+            "Open",
+            Style::new().fg(theme.primary).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" · ", theme.muted()),
+        Span::raw(folder_name(&browser.dir)),
+        Span::styled(
+            format!(
+                "  {} · {}",
+                count(folders, "folder"),
+                count(videos, "video")
+            ),
+            theme.muted(),
+        ),
+    ]);
     frame.render_widget(
-        Paragraph::new(Span::styled(BROWSER_HINTS, theme.muted())),
-        hints_area,
+        Paragraph::new(vec![first_line, second_line]).block(block),
+        area,
     );
+    let typed = u16::try_from(browser.query.chars().count()).unwrap_or(u16::MAX);
+    frame.set_cursor_position((inner.x.saturating_add(typed).min(inner.right()), inner.y));
+}
+
+/// The matches under the input; the selected one gets the accent bar.
+fn draw_home_results(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    browser: &Browser,
+    matches: &[&Entry],
+    theme: &Theme,
+) {
+    if matches.is_empty() {
+        let message = if browser.query.is_empty() {
+            "  No folders or video files here."
+        } else {
+            "  No matches."
+        };
+        frame.render_widget(Paragraph::new(Span::styled(message, theme.muted())), area);
+        return;
+    }
+    let visible = usize::from(area.height).max(1);
+    let first = browser
+        .selected
+        .saturating_sub(visible - 1)
+        .min(matches.len().saturating_sub(visible));
+    let lines: Vec<Line<'_>> = matches
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(visible)
+        .map(|(index, entry)| result_line(entry, index == browser.selected, theme))
+        .collect();
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+fn result_line<'a>(entry: &'a Entry, is_selected: bool, theme: &Theme) -> Line<'a> {
+    let name = match entry.kind {
+        EntryKind::Parent => Span::styled(".. (up a folder)", theme.muted()),
+        EntryKind::Directory => {
+            Span::styled(format!("{}/", entry.name), Style::new().fg(theme.primary))
+        }
+        EntryKind::Video => Span::raw(entry.name.as_str()),
+    };
+    if is_selected {
+        Line::from(vec![
+            Span::styled("┃ ", Style::new().fg(theme.primary)),
+            name.add_modifier(Modifier::BOLD),
+        ])
+        .style(Style::new().bg(theme.background_element))
+    } else {
+        Line::from(vec![Span::raw("  "), name])
+    }
+}
+
+/// `enter open  tab into folder …`: keys in full text, labels muted.
+fn hint_line(hints: &[(&str, &str)], theme: &Theme) -> Line<'static> {
+    let mut spans = Vec::new();
+    for (index, (keys, label)) in hints.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled((*keys).to_owned(), bold(theme)));
+        spans.push(Span::styled(format!(" {label}"), theme.muted()));
+    }
+    Line::from(spans)
+}
+
+/// The bottom row: where you are on the left, the version on the right.
+fn draw_footer(frame: &mut Frame<'_>, area: Rect, location: &str, theme: &Theme) {
+    let version = format!("{} ", env!("CARGO_PKG_VERSION"));
+    let version_width = u16::try_from(version.chars().count()).unwrap_or(0);
+    let [left, right] =
+        Layout::horizontal([Constraint::Min(0), Constraint::Length(version_width)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(format!(" {location}"), theme.muted())),
+        left,
+    );
+    frame.render_widget(Paragraph::new(Span::styled(version, theme.muted())), right);
+}
+
+/// The last component of `dir`, or the whole path at a root.
+fn folder_name(dir: &std::path::Path) -> String {
+    dir.file_name().map_or_else(
+        || dir.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    )
+}
+
+/// "1 folder", "3 videos".
+fn count(number: usize, noun: &str) -> String {
+    if number == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{number} {noun}s")
+    }
 }
 
 fn draw_editor(
@@ -620,8 +778,7 @@ mod tests {
         assert!(screen.contains("set out point (adds a clip)"));
     }
 
-    #[test]
-    fn browser_lists_entries_with_folders_marked() {
+    fn home_app() -> App {
         let (mut app, _) = App::browsing(PathBuf::from("videos"), None);
         app.update(Msg::DirectoryListed {
             dir: PathBuf::from("videos"),
@@ -638,10 +795,35 @@ mod tests {
                 },
             ]),
         });
-        let screen = render(&app);
-        assert!(screen.contains("Open a video · videos"));
-        assert!(screen.contains("▸ trips/"));
+        app
+    }
+
+    #[test]
+    fn home_shows_logo_search_results_hints_and_footer() {
+        let screen = render(&home_app());
+        assert!(
+            screen.contains("█▀▀ █ ▄ █▀█  █▀█   █ ▄ ▄█▄"),
+            "logo:
+{screen}"
+        );
+        assert!(screen.contains("Search this folder, or type a path…"));
+        assert!(screen.contains("Open · videos  1 folder · 1 video"));
+        assert!(screen.contains("┃ trips/"), "first match is selected");
         assert!(screen.contains("  a.mp4"));
+        assert!(screen.contains("enter open  tab into folder"));
+        assert!(screen.contains(&format!("{} ", env!("CARGO_PKG_VERSION"))));
+    }
+
+    #[test]
+    fn home_search_shows_the_query_and_no_matches() {
+        let mut app = home_app();
+        for character in "zz".chars() {
+            press(&mut app, KeyCode::Char(character));
+        }
+        let screen = render(&app);
+        assert!(screen.contains("zz"));
+        assert!(screen.contains("No matches."));
+        assert!(!screen.contains("Search this folder"));
     }
 
     #[test]
